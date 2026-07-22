@@ -32,7 +32,7 @@ function isAuthorized(request: NextRequest) {
 
 async function run() {
   const supabase = createAdminClient();
-  const today = new Date().toISOString().slice(0, 10); // yyyy-mm-dd
+  const now = new Date().toISOString(); // full timestamp — expiry_date is timestamptz
 
   const result = { notified: 0, escalated: 0, errors: [] as string[] };
 
@@ -41,7 +41,7 @@ async function run() {
     .from("documents")
     .select("*")
     .eq("status", "active")
-    .lte("expiry_date", today);
+    .lte("expiry_date", now);
 
   if (notifyErr) result.errors.push(`query active: ${notifyErr.message}`);
 
@@ -68,12 +68,11 @@ async function run() {
 
   if (escErr) result.errors.push(`query notified: ${escErr.message}`);
 
-  const todayMs = new Date(`${today}T00:00:00Z`).getTime();
+  const nowMs = Date.now();
   for (const doc of (notified ?? []) as CertDocument[]) {
     const dueMs =
-      new Date(`${doc.expiry_date}T00:00:00Z`).getTime() +
-      doc.escalation_days * 86_400_000;
-    if (todayMs < dueMs) continue;
+      new Date(doc.expiry_date).getTime() + doc.escalation_days * 86_400_000;
+    if (nowMs < dueMs) continue;
 
     try {
       const { error } = await sendEscalationEmail(doc);

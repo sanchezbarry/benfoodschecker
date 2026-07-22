@@ -4,6 +4,7 @@ import { ShieldCheck } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import type { CertDocument } from "@/lib/types";
 import { UploadForm } from "./upload-form";
+import { ReplaceForm } from "./replace-form";
 import { DocumentsList } from "./documents-list";
 import { LogoutButton } from "./logout-button";
 
@@ -42,6 +43,7 @@ export default async function DashboardPage() {
 
       <main className="mx-auto w-full max-w-4xl flex-1 space-y-6 p-4 sm:p-6">
         <UploadForm />
+        <ReplaceForm documents={documents} />
         <DocumentsList documents={documents} />
       </main>
     </div>

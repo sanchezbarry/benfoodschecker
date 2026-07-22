@@ -8,6 +8,7 @@ import { createDocument, type ActionState } from "./actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { DateTimeLocalInput } from "@/components/ui/datetime-local-input";
 import {
   Card,
   CardContent,
@@ -88,13 +89,8 @@ export function UploadForm() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="expiry_date">Expiry date</Label>
-              <Input
-                id="expiry_date"
-                name="expiry_date"
-                type="date"
-                required
-              />
+              <Label htmlFor="expiry_date">Expiry date &amp; time</Label>
+              <DateTimeLocalInput id="expiry_date" name="expiry_date" required />
             </div>
 
             <div className="space-y-2">

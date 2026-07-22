@@ -13,7 +13,7 @@ create table public.documents (
   file_path       text not null,          -- path inside the `documents` storage bucket
   file_type       text not null,
   file_size       bigint not null,
-  expiry_date     date not null,
+  expiry_date     timestamptz not null,   -- full date + time, so quick/exact-minute test expiries work
   marketing_email text not null,          -- Level 1 contact
   management_email text not null,         -- Level 2 (escalation) contact
   escalation_days integer not null default 7 check (escalation_days >= 0),
@@ -78,7 +78,16 @@ create policy "own files - delete"
   using (bucket_id = 'documents' and (storage.foldername(name))[1] = auth.uid()::text);
 
 -- ============================================================================
--- 4) OPTIONAL — schedule the cron job from inside Supabase (pg_cron + pg_net)
+-- 4) MIGRATION — if your `documents` table already exists with `expiry_date`
+--    as a plain `date`, run this once to upgrade it to `timestamptz` so exact
+--    times (not just whole days) can be used for testing/expiry:
+-- ============================================================================
+--
+-- alter table public.documents
+--   alter column expiry_date type timestamptz using expiry_date::timestamptz;
+
+-- ============================================================================
+-- 5) OPTIONAL — schedule the cron job from inside Supabase (pg_cron + pg_net)
 --    Skip this block if you use Vercel Cron instead (see vercel.json / README).
 --    Runs the reminder job every day at 08:00 UTC.
 -- ============================================================================

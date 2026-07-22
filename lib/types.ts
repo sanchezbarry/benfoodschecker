@@ -8,7 +8,7 @@ export interface CertDocument {
   file_path: string;
   file_type: string;
   file_size: number;
-  expiry_date: string; // yyyy-mm-dd
+  expiry_date: string; // ISO timestamptz — full date + time of expiry
   marketing_email: string;
   management_email: string;
   escalation_days: number;

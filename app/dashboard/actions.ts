@@ -25,7 +25,8 @@ export async function createDocument(
   if (!user) return { error: "You must be signed in." };
 
   const name = String(formData.get("name") ?? "").trim();
-  const expiry = String(formData.get("expiry_date") ?? "");
+  const expiryRaw = String(formData.get("expiry_date") ?? "");
+  const expiryDate = expiryRaw ? new Date(expiryRaw) : null;
   const marketingEmail = String(formData.get("marketing_email") ?? "").trim();
   const managementEmail = String(formData.get("management_email") ?? "").trim();
   const escalationDays = Number(
@@ -35,7 +36,8 @@ export async function createDocument(
 
   // ---- Validation ----
   if (!name) return { error: "Document name is required." };
-  if (!expiry) return { error: "Expiry date is required." };
+  if (!expiryRaw || !expiryDate || Number.isNaN(expiryDate.getTime()))
+    return { error: "Expiry date is required." };
   if (!EMAIL_RE.test(marketingEmail))
     return { error: "Enter a valid marketing contact email." };
   if (!EMAIL_RE.test(managementEmail))
@@ -68,7 +70,7 @@ export async function createDocument(
     file_path: path,
     file_type: file.type,
     file_size: file.size,
-    expiry_date: expiry,
+    expiry_date: expiryDate.toISOString(),
     marketing_email: marketingEmail,
     management_email: managementEmail,
     escalation_days: Math.round(escalationDays),
@@ -82,6 +84,86 @@ export async function createDocument(
 
   revalidatePath("/dashboard");
   return { success: `"${name}" added.` };
+}
+
+/**
+ * Renew an already-tracked document: upload the new file, set the new
+ * expiry, and reset the workflow back to `active` so the two-level
+ * reminders can fire again on the new expiry. Keeps the existing name,
+ * contacts, and escalation window — only the file and expiry change.
+ */
+export async function replaceDocument(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "You must be signed in." };
+
+  const id = String(formData.get("id") ?? "");
+  const expiryRaw = String(formData.get("expiry_date") ?? "");
+  const expiryDate = expiryRaw ? new Date(expiryRaw) : null;
+  const file = formData.get("file");
+
+  if (!id) return { error: "Choose which document you're replacing." };
+  if (!expiryRaw || !expiryDate || Number.isNaN(expiryDate.getTime()))
+    return { error: "New expiry date is required." };
+  if (!(file instanceof File) || file.size === 0)
+    return { error: "Please attach the renewed document file." };
+  if (file.size > MAX_FILE_SIZE)
+    return { error: `File is too large. Max size is ${MAX_FILE_SIZE_LABEL}.` };
+  if (!ACCEPTED_MIME_TYPES.includes(file.type as (typeof ACCEPTED_MIME_TYPES)[number]))
+    return { error: "Only PDF, PNG, JPG, or WEBP files are allowed." };
+
+  // RLS scopes this to the signed-in user's own row.
+  const { data: existing, error: fetchError } = await supabase
+    .from("documents")
+    .select("id, file_path")
+    .eq("id", id)
+    .single();
+
+  if (fetchError || !existing)
+    return { error: "Could not find that document." };
+
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? "bin";
+  const path = `${user.id}/${crypto.randomUUID()}.${ext}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from(DOCUMENTS_BUCKET)
+    .upload(path, file, { contentType: file.type, upsert: false });
+
+  if (uploadError) {
+    return { error: `Upload failed: ${uploadError.message}` };
+  }
+
+  const { error: updateError } = await supabase
+    .from("documents")
+    .update({
+      file_path: path,
+      file_type: file.type,
+      file_size: file.size,
+      expiry_date: expiryDate.toISOString(),
+      status: "active",
+      notified_at: null,
+      escalated_at: null,
+    })
+    .eq("id", id);
+
+  if (updateError) {
+    // Roll back the newly uploaded file so we don't leave orphans.
+    await supabase.storage.from(DOCUMENTS_BUCKET).remove([path]);
+    return { error: `Could not save the renewal: ${updateError.message}` };
+  }
+
+  // Old file is no longer referenced — remove it now that the swap succeeded.
+  if (existing.file_path) {
+    await supabase.storage.from(DOCUMENTS_BUCKET).remove([existing.file_path]);
+  }
+
+  revalidatePath("/dashboard");
+  return { success: "Document replaced with the renewed certificate." };
 }
 
 export async function deleteDocument(formData: FormData): Promise<void> {
