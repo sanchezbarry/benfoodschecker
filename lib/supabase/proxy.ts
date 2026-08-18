@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isAdmin } from "@/lib/auth";
 
 /**
  * Refreshes the Supabase auth session on every request and guards routes.
@@ -45,6 +46,15 @@ export async function updateSession(request: NextRequest) {
   if (!user && !isAuthRoute) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
+    return NextResponse.redirect(url);
+  }
+
+  // Signed in but not an admin, trying to reach the console -> dashboard.
+  // The /admin page and every admin action re-check this server-side; this
+  // redirect is for the user's benefit, not the security boundary.
+  if (user && pathname.startsWith("/admin") && !isAdmin(user)) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/dashboard";
     return NextResponse.redirect(url);
   }
 

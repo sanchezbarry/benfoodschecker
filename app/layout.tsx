@@ -28,6 +28,9 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
+        {/* Ben Foods green, as published — decorative, so the brighter value
+            is fine here even though body text uses the darkened --primary. */}
+        <div className="h-[3px] shrink-0 bg-brand" />
         {children}
       </body>
     </html>

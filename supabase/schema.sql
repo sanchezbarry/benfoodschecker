@@ -1,54 +1,217 @@
 -- ============================================================================
--- Ben Foods · Cert Checker — database schema
--- Run this in the Supabase SQL Editor (Dashboard → SQL Editor → New query).
+-- Ben Foods · Cert Checker — database schema (v2)
+--
+-- FRESH INSTALL: run this whole file in the Supabase SQL Editor.
+-- UPGRADING from v1 (a `documents` table with `name`, no folders): run
+-- `supabase/migrations/002_folders_versions_admin.sql` instead.
+--
+-- Model
+--   folders            one row per vendor/customer (code + name)
+--   documents          one row per certificate, always inside a folder;
+--                      mirrors the CURRENT version's file + expiry date
+--   document_versions  full upload history for a certificate
 -- ============================================================================
 
--- 1) Documents table -----------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 0) Admin role
+-- ---------------------------------------------------------------------------
+-- Source of truth is `app_metadata.role = 'admin'` on the auth user, stamped by
+-- the admin console through the service-role key (users cannot set it
+-- themselves). The email list is a bootstrap fallback so the two named accounts
+-- are admins from the very first login, before any metadata exists.
+--
+-- Keep the list in sync with BOOTSTRAP_ADMIN_EMAILS in lib/auth.ts.
+create or replace function public.is_admin()
+returns boolean
+language sql
+stable
+as $$
+  select
+    coalesce(auth.jwt() -> 'app_metadata' ->> 'role', '') = 'admin'
+    or lower(coalesce(auth.jwt() ->> 'email', '')) = any (
+      array['tester@test.com', 'mis-help@benfoods.com']
+    );
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 1) Folders — one per vendor / customer
+-- ---------------------------------------------------------------------------
+create table public.folders (
+  id         uuid primary key default gen_random_uuid(),
+  code       text not null,          -- e.g. FL001
+  name       text not null,          -- e.g. Fresh Life Pte Ltd
+  created_by uuid references auth.users (id) on delete set null,
+  created_at timestamptz not null default now(),
+  constraint folders_code_not_blank check (length(btrim(code)) > 0),
+  constraint folders_name_not_blank check (length(btrim(name)) > 0)
+);
+
+-- Vendor codes are unique regardless of casing, so "fl001" can't shadow "FL001".
+create unique index folders_code_unique on public.folders (upper(code));
+
+-- ---------------------------------------------------------------------------
+-- 2) Documents — one per certificate
+-- ---------------------------------------------------------------------------
 create type document_status as enum ('active', 'notified', 'escalated');
 
 create table public.documents (
-  id              uuid primary key default gen_random_uuid(),
-  user_id         uuid not null references auth.users (id) on delete cascade,
-  name            text not null,
-  file_path       text not null,          -- path inside the `documents` storage bucket
-  file_type       text not null,
-  file_size       bigint not null,
-  expiry_date     timestamptz not null,   -- full date + time, so quick/exact-minute test expiries work
-  marketing_email text not null,          -- Level 1 contact
-  management_email text not null,         -- Level 2 (escalation) contact
-  escalation_days integer not null default 7 check (escalation_days >= 0),
-  status          document_status not null default 'active',
-  notified_at     timestamptz,
-  escalated_at    timestamptz,
-  created_at      timestamptz not null default now()
+  id               uuid primary key default gen_random_uuid(),
+  user_id          uuid not null references auth.users (id) on delete cascade,
+  folder_id        uuid not null references public.folders (id) on delete restrict,
+  cert_type        text not null,        -- free text, e.g. "ISO 22000"
+  pic_name         text not null,        -- person in charge, captured at creation
+  file_path        text not null,        -- current version's path in the bucket
+  file_type        text not null,
+  file_size        bigint not null,
+  expiry_date      timestamptz not null, -- ALWAYS the current version's expiry
+  marketing_email  text not null,        -- Level 1 contact
+  management_email text not null,        -- Level 2 (escalation) contact
+  escalation_days  integer not null default 7 check (escalation_days >= 0),
+  status           document_status not null default 'active',
+  notified_at      timestamptz,
+  escalated_at     timestamptz,
+  created_at       timestamptz not null default now()
 );
 
 create index documents_user_id_idx on public.documents (user_id);
+create index documents_folder_id_idx on public.documents (folder_id);
 create index documents_status_idx on public.documents (status);
 create index documents_expiry_idx on public.documents (expiry_date);
+create index documents_cert_type_idx on public.documents (cert_type);
 
--- 2) Row Level Security --------------------------------------------------------
--- Each signed-in user can only see and manage their own documents.
--- The cron job uses the service-role key, which bypasses RLS.
+-- ---------------------------------------------------------------------------
+-- 3) Document versions — upload history
+-- ---------------------------------------------------------------------------
+-- Exactly one row per certificate carries `is_current`. That row's expiry_date
+-- is mirrored onto documents.expiry_date and is the ONLY one the reminder job
+-- looks at: retained older versions are history, never tracked for expiry.
+create table public.document_versions (
+  id               uuid primary key default gen_random_uuid(),
+  document_id      uuid not null references public.documents (id) on delete cascade,
+  version          integer not null check (version > 0),
+  file_path        text not null,
+  file_type        text not null,
+  file_size        bigint not null,
+  expiry_date      timestamptz not null,
+  is_current       boolean not null default false,
+  uploaded_by      uuid references auth.users (id) on delete set null,
+  uploaded_by_name text,
+  created_at       timestamptz not null default now(),
+  unique (document_id, version)
+);
+
+create index document_versions_document_id_idx
+  on public.document_versions (document_id);
+
+create unique index document_versions_single_current
+  on public.document_versions (document_id)
+  where is_current;
+
+-- ---------------------------------------------------------------------------
+-- 4) Row Level Security
+-- ---------------------------------------------------------------------------
+-- Regular users see only their own certificates; admins see everything.
+-- The cron job uses the service-role key, which bypasses RLS entirely.
+
+alter table public.folders enable row level security;
+
+-- Every signed-in user needs to read the vendor list to file a certificate,
+-- and may add a vendor on the fly from the upload form. Renaming and deleting
+-- folders is an admin-only operation.
+create policy "folders - read for all signed-in users"
+  on public.folders for select
+  to authenticated
+  using (true);
+
+create policy "folders - any signed-in user may add"
+  on public.folders for insert
+  to authenticated
+  with check (auth.uid() is not null);
+
+create policy "folders - admins may amend"
+  on public.folders for update
+  to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+create policy "folders - admins may delete"
+  on public.folders for delete
+  to authenticated
+  using (public.is_admin());
+
 alter table public.documents enable row level security;
 
-create policy "own documents - select"
+create policy "documents - own or admin: select"
   on public.documents for select
-  using (auth.uid() = user_id);
+  to authenticated
+  using (auth.uid() = user_id or public.is_admin());
 
-create policy "own documents - insert"
+create policy "documents - own: insert"
   on public.documents for insert
+  to authenticated
   with check (auth.uid() = user_id);
 
-create policy "own documents - update"
+create policy "documents - own or admin: update"
   on public.documents for update
-  using (auth.uid() = user_id);
+  to authenticated
+  using (auth.uid() = user_id or public.is_admin())
+  with check (auth.uid() = user_id or public.is_admin());
 
-create policy "own documents - delete"
+create policy "documents - own or admin: delete"
   on public.documents for delete
-  using (auth.uid() = user_id);
+  to authenticated
+  using (auth.uid() = user_id or public.is_admin());
 
--- 3) Private storage bucket ----------------------------------------------------
+alter table public.document_versions enable row level security;
+
+-- Versions inherit the access rules of the certificate they belong to.
+create policy "versions - follow parent document: select"
+  on public.document_versions for select
+  to authenticated
+  using (
+    exists (
+      select 1 from public.documents d
+      where d.id = document_id
+        and (d.user_id = auth.uid() or public.is_admin())
+    )
+  );
+
+create policy "versions - follow parent document: insert"
+  on public.document_versions for insert
+  to authenticated
+  with check (
+    exists (
+      select 1 from public.documents d
+      where d.id = document_id
+        and (d.user_id = auth.uid() or public.is_admin())
+    )
+  );
+
+create policy "versions - follow parent document: update"
+  on public.document_versions for update
+  to authenticated
+  using (
+    exists (
+      select 1 from public.documents d
+      where d.id = document_id
+        and (d.user_id = auth.uid() or public.is_admin())
+    )
+  );
+
+create policy "versions - follow parent document: delete"
+  on public.document_versions for delete
+  to authenticated
+  using (
+    exists (
+      select 1 from public.documents d
+      where d.id = document_id
+        and (d.user_id = auth.uid() or public.is_admin())
+    )
+  );
+
+-- ---------------------------------------------------------------------------
+-- 5) Private storage bucket
+-- ---------------------------------------------------------------------------
 -- File-size limit (10 MB) and allowed MIME types are enforced at the bucket
 -- level, in addition to the checks in the upload Server Action.
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
@@ -63,31 +226,34 @@ on conflict (id) do update
   set file_size_limit = excluded.file_size_limit,
       allowed_mime_types = excluded.allowed_mime_types;
 
--- Storage RLS: users may only touch files under a folder named after their uid.
--- Uploads use the path `<user_id>/<uuid>.<ext>`.
-create policy "own files - read"
+-- Files live under `<user_id>/<uuid>.<ext>`. Users may only touch their own
+-- folder; admins can read (and clean up) everything.
+create policy "documents bucket - own or admin: read"
   on storage.objects for select
-  using (bucket_id = 'documents' and (storage.foldername(name))[1] = auth.uid()::text);
+  to authenticated
+  using (
+    bucket_id = 'documents'
+    and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
+  );
 
-create policy "own files - insert"
+create policy "documents bucket - own: insert"
   on storage.objects for insert
-  with check (bucket_id = 'documents' and (storage.foldername(name))[1] = auth.uid()::text);
+  to authenticated
+  with check (
+    bucket_id = 'documents'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
 
-create policy "own files - delete"
+create policy "documents bucket - own or admin: delete"
   on storage.objects for delete
-  using (bucket_id = 'documents' and (storage.foldername(name))[1] = auth.uid()::text);
+  to authenticated
+  using (
+    bucket_id = 'documents'
+    and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
+  );
 
 -- ============================================================================
--- 4) MIGRATION — if your `documents` table already exists with `expiry_date`
---    as a plain `date`, run this once to upgrade it to `timestamptz` so exact
---    times (not just whole days) can be used for testing/expiry:
--- ============================================================================
---
--- alter table public.documents
---   alter column expiry_date type timestamptz using expiry_date::timestamptz;
-
--- ============================================================================
--- 5) OPTIONAL — schedule the cron job from inside Supabase (pg_cron + pg_net)
+-- 6) OPTIONAL — schedule the reminder job from inside Supabase (pg_cron+pg_net)
 --    Skip this block if you use Vercel Cron instead (see vercel.json / README).
 --    Runs the reminder job every day at 08:00 UTC.
 -- ============================================================================

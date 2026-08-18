@@ -1,32 +1,43 @@
 @import "tailwindcss";
 
 /*
- * shadcn/ui design tokens (Tailwind v4). This app ships dark-first:
- * the :root values below are the dark palette and are always applied.
+ * shadcn/ui design tokens (Tailwind v4) — Ben Foods light theme.
+ *
+ * Colours are taken from benfoods.com: the brand green #1f9a3a, the deep green
+ * #00672a, the red #c72031 and the orange #f4792d.
+ *
+ * `--brand` is the brand green exactly as published, and is used only for
+ * decoration (the accent rule, the logo tile) where the 3:1 bar applies.
+ * `--primary` is that same hue darkened to oklch L 0.491, which is roughly
+ * their deep green: at the published lightness, white button text lands at
+ * 3.7:1 and fails WCAG AA. The darkened value clears 4.5:1 everywhere it is
+ * used — as a button background, as body text on the page, and as badge text
+ * on its own 15% tint. `--destructive` and `--warning` are tuned the same way.
  */
 :root {
   --radius: 0.65rem;
 
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.185 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.185 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.72 0.17 145);
-  --primary-foreground: oklch(0.145 0 0);
-  --secondary: oklch(0.27 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.27 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.27 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.637 0.21 25.3);
-  --destructive-foreground: oklch(0.985 0 0);
-  --warning: oklch(0.79 0.16 78);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.72 0.17 145);
+  --background: oklch(0.985 0.004 150);
+  --foreground: oklch(0.205 0.006 150);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.205 0.006 150);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.205 0.006 150);
+  --primary: oklch(0.491 0.15 146.2);
+  --primary-foreground: oklch(1 0 0);
+  --brand: oklch(0.601 0.17 146.2);
+  --secondary: oklch(0.958 0.006 150);
+  --secondary-foreground: oklch(0.32 0.008 150);
+  --muted: oklch(0.958 0.006 150);
+  --muted-foreground: oklch(0.505 0.008 150);
+  --accent: oklch(0.955 0.012 150);
+  --accent-foreground: oklch(0.3 0.02 150);
+  --destructive: oklch(0.524 0.19 23);
+  --destructive-foreground: oklch(1 0 0);
+  --warning: oklch(0.52 0.14 48);
+  --border: oklch(0.905 0.006 150);
+  --input: oklch(0.875 0.008 150);
+  --ring: oklch(0.491 0.15 146.2);
 }
 
 @theme inline {
@@ -38,6 +49,7 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-brand: var(--brand);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -69,4 +81,10 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Native controls (checkboxes, radios, date pickers) follow the light theme. */
+:root {
+  color-scheme: light;
+  accent-color: var(--primary);
 }

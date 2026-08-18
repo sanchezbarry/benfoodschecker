@@ -1,10 +1,11 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
-import { Loader2, ShieldCheck } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
-import { signIn, signUp, type AuthState } from "./actions";
+import { signIn, type AuthState } from "./actions";
+import { BrandLogo } from "@/components/brand-logo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,33 +17,27 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-function SubmitButton({ mode }: { mode: "signin" | "signup" }) {
+function SubmitButton() {
   const { pending } = useFormStatus();
   return (
     <Button type="submit" className="w-full" disabled={pending}>
       {pending && <Loader2 className="animate-spin" />}
-      {mode === "signin" ? "Sign in" : "Create account"}
+      Sign in
     </Button>
   );
 }
 
 export function LoginForm() {
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
-  const action = mode === "signin" ? signIn : signUp;
-  const [state, formAction] = useActionState<AuthState, FormData>(action, null);
+  const [state, formAction] = useActionState<AuthState, FormData>(signIn, null);
 
   return (
     <Card className="w-full max-w-sm">
       <CardHeader className="space-y-3">
-        <div className="flex size-11 items-center justify-center rounded-lg bg-primary/15 text-primary">
-          <ShieldCheck className="size-6" />
-        </div>
+        <BrandLogo className="h-9" priority />
         <div className="space-y-1">
-          <CardTitle className="text-xl">Ben Foods · Cert Checker</CardTitle>
+          <CardTitle className="text-xl">Cert Checker</CardTitle>
           <CardDescription>
-            {mode === "signin"
-              ? "Sign in to manage document expiries."
-              : "Create an account to get started."}
+            Sign in to manage certificate expiries.
           </CardDescription>
         </div>
       </CardHeader>
@@ -65,9 +60,7 @@ export function LoginForm() {
               id="password"
               name="password"
               type="password"
-              autoComplete={
-                mode === "signin" ? "current-password" : "new-password"
-              }
+              autoComplete="current-password"
               placeholder="••••••••"
               required
             />
@@ -79,20 +72,11 @@ export function LoginForm() {
             </p>
           )}
 
-          <SubmitButton mode={mode} />
+          <SubmitButton />
         </form>
 
         <p className="mt-4 text-center text-sm text-muted-foreground">
-          {mode === "signin" ? "No account yet?" : "Already have an account?"}{" "}
-          <button
-            type="button"
-            className="font-medium text-primary hover:underline"
-            onClick={() =>
-              setMode((m) => (m === "signin" ? "signup" : "signin"))
-            }
-          >
-            {mode === "signin" ? "Create one" : "Sign in"}
-          </button>
+          Need an account? Ask an administrator to create one for you.
         </p>
       </CardContent>
     </Card>
