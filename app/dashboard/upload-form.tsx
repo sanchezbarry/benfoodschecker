@@ -5,12 +5,13 @@ import { useFormStatus } from "react-dom";
 import { Loader2, Upload } from "lucide-react";
 
 import { createDocument, type ActionState } from "./actions";
+import { uploadCertificateFile } from "./upload-file";
 import type { Suggestions } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ComboboxInput } from "@/components/ui/combobox-input";
-import { DateTimeLocalInput } from "@/components/ui/datetime-local-input";
+import { DateInput } from "@/components/ui/date-input";
 import {
   Card,
   CardContent,
@@ -18,11 +19,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { COMPRESSION_HINT } from "@/lib/compress";
 import {
   ACCEPTED_FILE_EXTENSIONS,
   DEFAULT_ESCALATION_DAYS,
-  MAX_FILE_SIZE,
-  MAX_FILE_SIZE_LABEL,
+  MAX_UPLOAD_INPUT_SIZE,
+  MAX_UPLOAD_INPUT_SIZE_LABEL,
 } from "@/lib/constants";
 
 function SubmitButton() {
@@ -42,8 +44,21 @@ export function UploadForm({
   suggestions: Suggestions;
   picName: string;
 }) {
+  // The file goes straight from the browser to Supabase Storage; only its path
+  // travels on to the Server Action. Wrapping the action this way keeps
+  // `useFormStatus().pending` true across the upload as well as the save.
   const [state, formAction] = useActionState<ActionState, FormData>(
-    createDocument,
+    async (prev, formData) => {
+      const uploaded = await uploadCertificateFile(formData.get("file"));
+      if ("error" in uploaded) return { error: uploaded.error };
+      formData.delete("file");
+      formData.set("file_path", uploaded.path);
+      const result = await createDocument(prev, formData);
+      // Tell the user what compression actually saved them.
+      return result?.success && uploaded.note
+        ? { success: `${result.success} ${uploaded.note}` }
+        : result;
+    },
     null,
   );
   const formRef = useRef<HTMLFormElement>(null);
@@ -87,8 +102,10 @@ export function UploadForm({
   // Client-side size guard for immediate feedback (the server re-validates).
   function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (file && file.size > MAX_FILE_SIZE) {
-      alert(`File is too large. Max size is ${MAX_FILE_SIZE_LABEL}.`);
+    // Only the outer ceiling is checked here: an oversized photo is fine
+    // because it gets downscaled before upload.
+    if (file && file.size > MAX_UPLOAD_INPUT_SIZE) {
+      alert(`That file is over ${MAX_UPLOAD_INPUT_SIZE_LABEL}. Please pick a smaller one.`);
       e.target.value = "";
     }
   }
@@ -101,7 +118,7 @@ export function UploadForm({
           Certificates are filed under a vendor / customer folder. Type a new
           code to create the folder, or pick one already in use. Free-text
           fields offer what has been entered before — you can always type
-          something new. PDF or image, max {MAX_FILE_SIZE_LABEL}.
+          something new. {COMPRESSION_HINT}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -162,8 +179,8 @@ export function UploadForm({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="expiry_date">Expiry date &amp; time</Label>
-              <DateTimeLocalInput id="expiry_date" name="expiry_date" required />
+              <Label htmlFor="expiry_date">Expiry date</Label>
+              <DateInput id="expiry_date" name="expiry_date" required />
             </div>
 
             <div className="space-y-2">

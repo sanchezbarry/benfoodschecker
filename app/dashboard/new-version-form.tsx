@@ -5,13 +5,14 @@ import { useFormStatus } from "react-dom";
 import { Loader2, FilePlus2 } from "lucide-react";
 
 import { uploadNewVersion, type ActionState } from "./actions";
+import { uploadCertificateFile } from "./upload-file";
 import type { CertDocument } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { DateTimeLocalInput } from "@/components/ui/datetime-local-input";
+import { DateInput } from "@/components/ui/date-input";
 import {
   Card,
   CardContent,
@@ -19,10 +20,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { COMPRESSION_HINT } from "@/lib/compress";
 import {
   ACCEPTED_FILE_EXTENSIONS,
-  MAX_FILE_SIZE,
-  MAX_FILE_SIZE_LABEL,
+  MAX_UPLOAD_INPUT_SIZE,
+  MAX_UPLOAD_INPUT_SIZE_LABEL,
 } from "@/lib/constants";
 
 function SubmitButton() {
@@ -36,8 +38,21 @@ function SubmitButton() {
 }
 
 export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
+  // The file goes straight from the browser to Supabase Storage; only its path
+  // travels on to the Server Action. Wrapping the action this way keeps
+  // `useFormStatus().pending` true across the upload as well as the save.
   const [state, formAction] = useActionState<ActionState, FormData>(
-    uploadNewVersion,
+    async (prev, formData) => {
+      const uploaded = await uploadCertificateFile(formData.get("file"));
+      if ("error" in uploaded) return { error: uploaded.error };
+      formData.delete("file");
+      formData.set("file_path", uploaded.path);
+      const result = await uploadNewVersion(prev, formData);
+      // Tell the user what compression actually saved them.
+      return result?.success && uploaded.note
+        ? { success: `${result.success} ${uploaded.note}` }
+        : result;
+    },
     null,
   );
   const formRef = useRef<HTMLFormElement>(null);
@@ -48,8 +63,10 @@ export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
 
   function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (file && file.size > MAX_FILE_SIZE) {
-      alert(`File is too large. Max size is ${MAX_FILE_SIZE_LABEL}.`);
+    // Only the outer ceiling is checked here: an oversized photo is fine
+    // because it gets downscaled before upload.
+    if (file && file.size > MAX_UPLOAD_INPUT_SIZE) {
+      alert(`That file is over ${MAX_UPLOAD_INPUT_SIZE_LABEL}. Please pick a smaller one.`);
       e.target.value = "";
     }
   }
@@ -64,7 +81,8 @@ export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
           Renew a certificate by uploading its latest file. The new version
           becomes the tracked one — <strong>only its expiry date is
           monitored</strong>, even if you keep the older versions on file.
-          Reminders reset so they fire again against the new date.
+          Reminders reset so they fire again against the new date.{" "}
+          {COMPRESSION_HINT}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -98,10 +116,8 @@ export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="version_expiry_date">
-                New expiry date &amp; time
-              </Label>
-              <DateTimeLocalInput
+              <Label htmlFor="version_expiry_date">New expiry date</Label>
+              <DateInput
                 id="version_expiry_date"
                 name="expiry_date"
                 required

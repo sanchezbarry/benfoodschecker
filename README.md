@@ -9,8 +9,11 @@ escalating email reminders**.
   (code + name, e.g. `FL001 — Fresh Life Pte Ltd`)
 - **Versions** — upload a new version of a certificate and choose to **retain**
   or **delete** the old one. Only the newest version's expiry date is tracked.
-- **Upload** — PDFs or images to a private Supabase Storage bucket, size-limited
-  to **10 MB** and restricted to PDF/PNG/JPG/WEBP
+- **Upload** — PDFs or images, sent **straight from the browser** to a private
+  Supabase Storage bucket via a signed upload URL, restricted to
+  PDF/PNG/JPG/WEBP and capped at **25 MB** once stored
+- **Compression** — photos and large scanned PDFs are re-rendered in the browser
+  before upload, typically shedding 70–90% of the bytes
 - **Two-level reminders**
   1. **On expiry** → email the **marketing contact**
   2. **N days later**, if the certificate still hasn't been renewed → escalate to
@@ -30,6 +33,10 @@ Light theme, styled to the Ben Foods identity. The palette in
 [`app/globals.css`](app/globals.css) is taken from benfoods.com — the brand green
 `#1f9a3a`, the deep green `#00672a`, the red `#c72031` and the orange `#f4792d` —
 and the wordmark is served from [`public/benfoods-logo.png`](public/benfoods-logo.png).
+
+The browser icons are the logo's triangle-and-B mark with the wordmark cropped
+away: `app/favicon.ico` (16/32/48), `app/icon.png` (512) and `app/apple-icon.png`
+(180, flattened onto white since iOS home screens have no alpha).
 
 Two green tokens, because one can't do both jobs:
 
@@ -112,8 +119,10 @@ themselves. Toggle it with the **Administrator** checkbox in the admin console.
    - an existing v1 database (a `documents` table with a `name` column and no
      folders) → [`supabase/migrations/002_folders_versions_admin.sql`](supabase/migrations/002_folders_versions_admin.sql).
      It backfills every existing certificate into an `UNSORTED` folder, turns its
-     old `name` into the certificate type, and seeds version 1 of each file. It
-     runs in a transaction, so a failure leaves the database untouched.
+     old `name` into the certificate type, and seeds version 1 of each file.
+     Every step is guarded, so it is safe to re-run and safe to execute a
+     section at a time. Run the sections **in order** — section 4 reads columns
+     that section 3 adds.
 3. **Authentication → Providers → Email**: keep Email enabled. Admin-created
    accounts are confirmed automatically, so the "Confirm email" setting doesn't
    affect them.
@@ -158,6 +167,58 @@ form. Everyone else is created from there too.
 
 ## Using it
 
+### Uploads
+
+Certificates never pass through Next.js. The browser asks a Server Action for a
+short-lived signed upload URL, sends the file directly to Supabase Storage, then
+submits only the resulting path. Two limits make that necessary rather than
+merely tidy: Server Action request bodies default to **1 MB**, and Vercel caps
+function request bodies at **4.5 MB** regardless of `serverActions.bodySizeLimit`
+— both below the 10 MB this app allows.
+
+The path is minted server-side from the session (`<user_id>/<uuid>.<ext>`, the
+extension derived from the MIME type, never the filename), and re-validated when
+it comes back: [`app/dashboard/actions.ts`](app/dashboard/actions.ts) confirms it
+sits in the caller's own folder and re-reads the object's true size and type from
+storage, which is also where the `file_size` / `file_type` columns come from.
+
+Before uploading, [`lib/compress.ts`](lib/compress.ts) downscales images to
+2000px on the longest edge and re-encodes them as WEBP at quality 0.82 — a
+3000×2000 scan measured at an 86% reduction. It honours EXIF orientation, flattens
+transparency onto white, and keeps the original whenever re-encoding would not
+actually be smaller or the browser cannot decode the file.
+
+**PDFs over 3 MB** are re-rendered page by page at 150dpi and re-encoded as
+JPEG, using `pdfjs-dist` to rasterise and `pdf-lib` to rebuild. Both are imported
+lazily, so neither reaches the bundle unless someone actually picks a big PDF.
+
+The threshold exists because rasterising flattens the document — any selectable
+text is lost. A sample of nine real certificates showed the split cleanly:
+
+| | Size | Character |
+| --- | --- | --- |
+| 4 files | 0.12–0.31 MB | born-digital; embedded images are only logos and QR codes |
+| 3 files | 0.40–2.06 MB | single-page scans, one at a needless 600dpi |
+| 2 files | 11.4 / 17.5 MB | 13- and 14-page scan bundles at up to 768dpi |
+
+So below 3 MB nothing is worth flattening, and above it the file is a scan with
+no text layer to lose. Measured on those samples: **17.46 MB → 3.94 MB (77%) in
+1.7s**, and 11.41 MB → 3.65 MB (68%). The rebuilt PDF keeps its page count and
+original page dimensions, so it still prints to scale. If rasterising saves less
+than 20%, the original is kept instead.
+
+| Constant | Meaning |
+| --- | --- |
+| `MAX_FILE_SIZE` (25 MB) | what may finally land in the bucket, after compression |
+| `MAX_UPLOAD_INPUT_SIZE` (40 MB) | what a user may pick — a big photo is fine, it gets downscaled |
+| `PDF_COMPRESS_THRESHOLD` (3 MB) | PDFs below this keep their text layer, untouched |
+
+25 MB rather than 10: the two real scan bundles above exceeded a 10 MB cap and
+were rejected outright. Because uploads bypass the Server Action entirely,
+Vercel's 4.5 MB limit is not a factor and the bucket limit is the only ceiling —
+keep `MAX_FILE_SIZE` in sync with `storage.buckets.file_size_limit`
+(see [`supabase/migrations/003_raise_bucket_size_limit.sql`](supabase/migrations/003_raise_bucket_size_limit.sql)).
+
 ### Filing a certificate (`/dashboard`)
 
 | Field | Notes |
@@ -166,7 +227,7 @@ form. Everyone else is created from there too.
 | Vendor / customer name | free text with a dropdown; picking either code or name fills in the other |
 | PIC | read-only, taken from your account's name |
 | Certificate type | free text with a dropdown of types already in use (`SUPPLIER FORM`, `ISO 22000`, …) |
-| Expiry date & time | what the reminder job watches |
+| Expiry date | whole days — stored as 00:00 local on the chosen date; the reminder job watches this |
 | File, contacts, escalation window | PDF/image, the two email recipients, and the grace period |
 
 Typing a code that already exists files the certificate into that folder and

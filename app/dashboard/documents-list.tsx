@@ -13,7 +13,7 @@ import {
 
 import { deleteDocument, deleteVersion, getSignedUrl } from "./actions";
 import type { CertDocument, DocumentVersion } from "@/lib/types";
-import { daysUntil, formatBytes, formatDate } from "@/lib/utils";
+import { daysUntil, formatBytes, formatDate, formatDateTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -137,7 +137,7 @@ function VersionHistory({ doc }: { doc: CertDocument }) {
               <span>expiry {formatDate(v.expiry_date)}</span>
               <span>· {formatBytes(v.file_size)}</span>
               <span>
-                · uploaded {formatDate(v.created_at)}
+                · uploaded {formatDateTime(v.created_at)}
                 {v.uploaded_by_name ? ` by ${v.uploaded_by_name}` : ""}
               </span>
             </span>

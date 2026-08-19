@@ -13,23 +13,121 @@ import {
 } from "@/lib/constants";
 
 export type ActionState = { error?: string; success?: string } | null;
+export type UploadTicket = { path: string; token: string } | { error: string };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-/** Shared file checks. Returns an error message, or null when the file is fine. */
-function validateFile(file: FormDataEntryValue | null): string | null {
-  if (!(file instanceof File) || file.size === 0)
-    return "Please attach a certificate file.";
-  if (file.size > MAX_FILE_SIZE)
-    return `File is too large. Max size is ${MAX_FILE_SIZE_LABEL}.`;
-  if (!ACCEPTED_MIME_TYPES.includes(file.type as (typeof ACCEPTED_MIME_TYPES)[number]))
-    return "Only PDF, PNG, JPG, or WEBP files are allowed.";
-  return null;
+/**
+ * The extension is derived from the MIME type rather than the uploaded
+ * filename, so a client can't smuggle a path or a misleading suffix into the
+ * bucket.
+ */
+const EXTENSION_BY_MIME: Record<string, string> = {
+  "application/pdf": "pdf",
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+};
+
+type SessionClient = Awaited<ReturnType<typeof getSession>>["supabase"];
+
+// ---------------------------------------------------------------------------
+// Uploads
+// ---------------------------------------------------------------------------
+
+/**
+ * Mint a short-lived signed URL so the browser can upload a certificate
+ * **straight to Supabase Storage**, instead of streaming the bytes through a
+ * Server Action.
+ *
+ * Server Actions cap request bodies at 1 MB, and on Vercel the platform caps
+ * them at 4.5 MB no matter what `serverActions.bodySizeLimit` says — both well
+ * under the 10 MB this app allows. Going direct sidesteps both: the action then
+ * only receives the resulting path, a couple of hundred bytes.
+ *
+ * The path is built from the session, never from the client, so it always lands
+ * in the folder the storage policy lets this user write to.
+ */
+export async function createUploadTicket(
+  contentType: string,
+): Promise<UploadTicket> {
+  const { supabase, user } = await getSession();
+  if (!user) return { error: "You must be signed in." };
+
+  const extension = EXTENSION_BY_MIME[contentType];
+  if (!extension)
+    return { error: "Only PDF, PNG, JPG, or WEBP files are allowed." };
+
+  const path = `${user.id}/${crypto.randomUUID()}.${extension}`;
+
+  const { data, error } = await supabase.storage
+    .from(DOCUMENTS_BUCKET)
+    .createSignedUploadUrl(path);
+
+  if (error || !data)
+    return {
+      error: `Could not start the upload: ${error?.message ?? "unknown error"}`,
+    };
+
+  return { path, token: data.token };
 }
 
-function storagePath(userId: string, file: File) {
-  const ext = file.name.split(".").pop()?.toLowerCase() ?? "bin";
-  return `${userId}/${crypto.randomUUID()}.${ext}`;
+/**
+ * Confirm a path the browser hands back really is an object this user just
+ * uploaded, and read its true size and MIME type from storage.
+ *
+ * We minted the path, but it makes a round trip through the client, so it is
+ * untrusted on the way back. Reading the metadata here rather than accepting
+ * the client's word for it is also what supplies the `file_size` / `file_type`
+ * columns. (The bucket independently enforces the size and MIME limits, so this
+ * is the second of two gates, not the only one.)
+ */
+async function claimUpload(
+  supabase: SessionClient,
+  userId: string,
+  path: string,
+): Promise<
+  { ok: true; type: string; size: number } | { ok: false; error: string }
+> {
+  if (!path.startsWith(`${userId}/`) || path.includes(".."))
+    return { ok: false, error: "That upload doesn't belong to you." };
+
+  const separator = path.lastIndexOf("/");
+  const folder = path.slice(0, separator);
+  const name = path.slice(separator + 1);
+
+  const { data, error } = await supabase.storage
+    .from(DOCUMENTS_BUCKET)
+    .list(folder, { search: name, limit: 100 });
+
+  const object = data?.find((o) => o.name === name);
+  if (error || !object)
+    return {
+      ok: false,
+      error: "The uploaded file could not be found. Please try again.",
+    };
+
+  const size = Number(object.metadata?.size ?? 0);
+  const type = String(object.metadata?.mimetype ?? "");
+
+  if (!size) return { ok: false, error: "The uploaded file is empty." };
+  if (size > MAX_FILE_SIZE)
+    return {
+      ok: false,
+      error: `File is too large. Max size is ${MAX_FILE_SIZE_LABEL}.`,
+    };
+  if (!ACCEPTED_MIME_TYPES.includes(type as (typeof ACCEPTED_MIME_TYPES)[number]))
+    return {
+      ok: false,
+      error: "Only PDF, PNG, JPG, or WEBP files are allowed.",
+    };
+
+  return { ok: true, type, size };
+}
+
+/** Drop an already-uploaded object when the surrounding action can't complete. */
+async function discard(supabase: SessionClient, path: string) {
+  if (path) await supabase.storage.from(DOCUMENTS_BUCKET).remove([path]);
 }
 
 // ---------------------------------------------------------------------------
@@ -37,7 +135,7 @@ function storagePath(userId: string, file: File) {
 // ---------------------------------------------------------------------------
 
 /**
- * File a new certificate.
+ * File a new certificate against a file the browser has already uploaded.
  *
  * Vendor code and name are free text with dropdown hints. An unrecognised code
  * creates the vendor folder on the fly; a code that already exists files the
@@ -51,6 +149,15 @@ export async function createDocument(
   const { supabase, user } = await getSession();
   if (!user) return { error: "You must be signed in." };
 
+  const filePath = String(formData.get("file_path") ?? "");
+
+  // The file is already in the bucket by the time this runs, so every failure
+  // from here on has to take it back out rather than leave an orphan behind.
+  const fail = async (error: string): Promise<ActionState> => {
+    await discard(supabase, filePath);
+    return { error };
+  };
+
   const vendorCode = String(formData.get("vendor_code") ?? "").trim();
   const vendorName = String(formData.get("vendor_name") ?? "").trim();
   const certType = String(formData.get("cert_type") ?? "").trim();
@@ -61,24 +168,23 @@ export async function createDocument(
   const escalationDays = Number(
     formData.get("escalation_days") ?? DEFAULT_ESCALATION_DAYS,
   );
-  const file = formData.get("file");
 
   // ---- Validation ----
-  if (!vendorCode) return { error: "Vendor / customer code is required." };
-  if (!vendorName) return { error: "Vendor / customer name is required." };
-  if (!certType) return { error: "Certificate type is required." };
+  if (!filePath) return { error: "Please attach a certificate file." };
+  if (!vendorCode) return fail("Vendor / customer code is required.");
+  if (!vendorName) return fail("Vendor / customer name is required.");
+  if (!certType) return fail("Certificate type is required.");
   if (!expiryRaw || !expiryDate || Number.isNaN(expiryDate.getTime()))
-    return { error: "Expiry date is required." };
+    return fail("Expiry date is required.");
   if (!EMAIL_RE.test(marketingEmail))
-    return { error: "Enter a valid marketing contact email." };
+    return fail("Enter a valid marketing contact email.");
   if (!EMAIL_RE.test(managementEmail))
-    return { error: "Enter a valid senior management email." };
+    return fail("Enter a valid senior management email.");
   if (!Number.isFinite(escalationDays) || escalationDays < 0)
-    return { error: "Escalation days must be a positive number." };
+    return fail("Escalation days must be a positive number.");
 
-  const fileError = validateFile(file);
-  if (fileError) return { error: fileError };
-  const certFile = file as File;
+  const upload = await claimUpload(supabase, user.id, filePath);
+  if (!upload.ok) return fail(upload.error);
 
   // ---- Resolve (or create) the vendor folder ----
   // `ilike` narrows the search, but a code containing % or _ would match as a
@@ -90,7 +196,7 @@ export async function createDocument(
     .ilike("code", vendorCode);
 
   if (folderLookupError)
-    return { error: `Could not look up the vendor: ${folderLookupError.message}` };
+    return fail(`Could not look up the vendor: ${folderLookupError.message}`);
 
   let folder =
     candidates?.find(
@@ -106,22 +212,14 @@ export async function createDocument(
       .single();
 
     if (folderError || !created)
-      return {
-        error: `Could not create the vendor folder: ${folderError?.message ?? "unknown error"}`,
-      };
+      return fail(
+        `Could not create the vendor folder: ${folderError?.message ?? "unknown error"}`,
+      );
     folder = created;
     folderNote = ` New vendor folder ${created.code} created.`;
   } else if (folder.name.toLowerCase() !== vendorName.toLowerCase()) {
     folderNote = ` Filed under the existing vendor ${folder.code} — ${folder.name}; ask an admin to rename it if that's wrong.`;
   }
-
-  // ---- Upload to the private Storage bucket (scoped to the user's folder) ----
-  const path = storagePath(user.id, certFile);
-  const { error: uploadError } = await supabase.storage
-    .from(DOCUMENTS_BUCKET)
-    .upload(path, certFile, { contentType: certFile.type, upsert: false });
-
-  if (uploadError) return { error: `Upload failed: ${uploadError.message}` };
 
   // ---- Insert the certificate, then its first version ----
   const pic = displayName(user);
@@ -133,9 +231,9 @@ export async function createDocument(
       folder_id: folder.id,
       cert_type: certType,
       pic_name: pic,
-      file_path: path,
-      file_type: certFile.type,
-      file_size: certFile.size,
+      file_path: filePath,
+      file_type: upload.type,
+      file_size: upload.size,
       expiry_date: expiryDate.toISOString(),
       marketing_email: marketingEmail,
       management_email: managementEmail,
@@ -144,20 +242,17 @@ export async function createDocument(
     .select("id")
     .single();
 
-  if (insertError || !doc) {
-    // Roll back the uploaded file so we don't leave orphans.
-    await supabase.storage.from(DOCUMENTS_BUCKET).remove([path]);
-    return {
-      error: `Could not save the certificate: ${insertError?.message ?? "unknown error"}`,
-    };
-  }
+  if (insertError || !doc)
+    return fail(
+      `Could not save the certificate: ${insertError?.message ?? "unknown error"}`,
+    );
 
   const { error: versionError } = await supabase.from("document_versions").insert({
     document_id: doc.id,
     version: 1,
-    file_path: path,
-    file_type: certFile.type,
-    file_size: certFile.size,
+    file_path: filePath,
+    file_type: upload.type,
+    file_size: upload.size,
     expiry_date: expiryDate.toISOString(),
     is_current: true,
     uploaded_by: user.id,
@@ -166,8 +261,7 @@ export async function createDocument(
 
   if (versionError) {
     await supabase.from("documents").delete().eq("id", doc.id);
-    await supabase.storage.from(DOCUMENTS_BUCKET).remove([path]);
-    return { error: `Could not save the certificate: ${versionError.message}` };
+    return fail(`Could not save the certificate: ${versionError.message}`);
   }
 
   revalidatePath("/dashboard");
@@ -179,7 +273,8 @@ export async function createDocument(
 // ---------------------------------------------------------------------------
 
 /**
- * Upload a new version of an existing certificate.
+ * Record a new version of an existing certificate against an already-uploaded
+ * file.
  *
  * The new version becomes the current one and its expiry is mirrored onto the
  * `documents` row, so the reminder job tracks it and nothing else: a retained
@@ -196,39 +291,38 @@ export async function uploadNewVersion(
   const { supabase, user } = await getSession();
   if (!user) return { error: "You must be signed in." };
 
+  const filePath = String(formData.get("file_path") ?? "");
+  const fail = async (error: string): Promise<ActionState> => {
+    await discard(supabase, filePath);
+    return { error };
+  };
+
   const id = String(formData.get("id") ?? "");
   const expiryRaw = String(formData.get("expiry_date") ?? "");
   const expiryDate = expiryRaw ? new Date(expiryRaw) : null;
   const deleteOld = String(formData.get("old_versions") ?? "retain") === "delete";
-  const file = formData.get("file");
 
-  if (!id) return { error: "Choose which certificate you're updating." };
+  if (!filePath) return { error: "Please attach the new certificate file." };
+  if (!id) return fail("Choose which certificate you're updating.");
   if (!expiryRaw || !expiryDate || Number.isNaN(expiryDate.getTime()))
-    return { error: "The new version's expiry date is required." };
+    return fail("The new version's expiry date is required.");
 
-  const fileError = validateFile(file);
-  if (fileError) return { error: fileError };
-  const certFile = file as File;
+  const upload = await claimUpload(supabase, user.id, filePath);
+  if (!upload.ok) return fail(upload.error);
 
   // RLS scopes this to the caller's own certificate (or any, for an admin).
   const { data: existing, error: fetchError } = await supabase
     .from("documents")
-    .select("id, cert_type, file_path, versions:document_versions(*)")
+    .select("id, cert_type, versions:document_versions(*)")
     .eq("id", id)
     .single();
 
-  if (fetchError || !existing) return { error: "Could not find that certificate." };
+  if (fetchError || !existing) return fail("Could not find that certificate.");
 
   const priorVersions = (existing.versions ?? []) as DocumentVersion[];
   const nextVersion =
     priorVersions.reduce((max, v) => Math.max(max, v.version), 0) + 1;
-
-  const path = storagePath(user.id, certFile);
-  const { error: uploadError } = await supabase.storage
-    .from(DOCUMENTS_BUCKET)
-    .upload(path, certFile, { contentType: certFile.type, upsert: false });
-
-  if (uploadError) return { error: `Upload failed: ${uploadError.message}` };
+  const previousCurrent = priorVersions.find((v) => v.is_current);
 
   // Stand down the old current version first — only one row per certificate is
   // allowed to be current (enforced by a partial unique index).
@@ -238,17 +332,25 @@ export async function uploadNewVersion(
     .eq("document_id", id)
     .eq("is_current", true);
 
-  if (demoteError) {
-    await supabase.storage.from(DOCUMENTS_BUCKET).remove([path]);
-    return { error: `Could not update version history: ${demoteError.message}` };
-  }
+  if (demoteError)
+    return fail(`Could not update version history: ${demoteError.message}`);
+
+  /** Put the history back as it was, so the tracked expiry never dangles. */
+  const restorePrevious = async () => {
+    if (previousCurrent) {
+      await supabase
+        .from("document_versions")
+        .update({ is_current: true })
+        .eq("id", previousCurrent.id);
+    }
+  };
 
   const { error: versionError } = await supabase.from("document_versions").insert({
     document_id: id,
     version: nextVersion,
-    file_path: path,
-    file_type: certFile.type,
-    file_size: certFile.size,
+    file_path: filePath,
+    file_type: upload.type,
+    file_size: upload.size,
     expiry_date: expiryDate.toISOString(),
     is_current: true,
     uploaded_by: user.id,
@@ -256,24 +358,17 @@ export async function uploadNewVersion(
   });
 
   if (versionError) {
-    const previousCurrent = priorVersions.find((v) => v.is_current);
-    if (previousCurrent) {
-      await supabase
-        .from("document_versions")
-        .update({ is_current: true })
-        .eq("id", previousCurrent.id);
-    }
-    await supabase.storage.from(DOCUMENTS_BUCKET).remove([path]);
-    return { error: `Could not save the new version: ${versionError.message}` };
+    await restorePrevious();
+    return fail(`Could not save the new version: ${versionError.message}`);
   }
 
   // Mirror the new version onto the certificate: this expiry is the tracked one.
   const { error: updateError } = await supabase
     .from("documents")
     .update({
-      file_path: path,
-      file_type: certFile.type,
-      file_size: certFile.size,
+      file_path: filePath,
+      file_type: upload.type,
+      file_size: upload.size,
       expiry_date: expiryDate.toISOString(),
       status: "active",
       notified_at: null,
@@ -282,22 +377,13 @@ export async function uploadNewVersion(
     .eq("id", id);
 
   if (updateError) {
-    // Put the history back the way it was so the tracked expiry never points at
-    // a version the certificate row doesn't know about.
     await supabase
       .from("document_versions")
       .delete()
       .eq("document_id", id)
       .eq("version", nextVersion);
-    const previousCurrent = priorVersions.find((v) => v.is_current);
-    if (previousCurrent) {
-      await supabase
-        .from("document_versions")
-        .update({ is_current: true })
-        .eq("id", previousCurrent.id);
-    }
-    await supabase.storage.from(DOCUMENTS_BUCKET).remove([path]);
-    return { error: `Could not save the new version: ${updateError.message}` };
+    await restorePrevious();
+    return fail(`Could not save the new version: ${updateError.message}`);
   }
 
   let note = ` Version ${nextVersion - 1} kept in the history.`;

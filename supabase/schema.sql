@@ -63,7 +63,8 @@ create table public.documents (
   file_path        text not null,        -- current version's path in the bucket
   file_type        text not null,
   file_size        bigint not null,
-  expiry_date      timestamptz not null, -- ALWAYS the current version's expiry
+  expiry_date      timestamptz not null, -- ALWAYS the current version's expiry,
+                                         -- stored as 00:00 local on that date
   marketing_email  text not null,        -- Level 1 contact
   management_email text not null,        -- Level 2 (escalation) contact
   escalation_days  integer not null default 7 check (escalation_days >= 0),
@@ -212,14 +213,15 @@ create policy "versions - follow parent document: delete"
 -- ---------------------------------------------------------------------------
 -- 5) Private storage bucket
 -- ---------------------------------------------------------------------------
--- File-size limit (10 MB) and allowed MIME types are enforced at the bucket
--- level, in addition to the checks in the upload Server Action.
+-- File-size limit and allowed MIME types are enforced at the bucket level, in
+-- addition to the checks in the upload Server Action. Keep the limit in sync
+-- with MAX_FILE_SIZE in lib/constants.ts.
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
   'documents',
   'documents',
   false,
-  10485760, -- 10 MB
+  26214400, -- 25 MB
   array['application/pdf', 'image/png', 'image/jpeg', 'image/webp']
 )
 on conflict (id) do update

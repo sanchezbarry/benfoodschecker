@@ -5,8 +5,21 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-/** Format an ISO timestamp (date, or date+time) for display, including the time. */
+/**
+ * Format an expiry for display. Expiries are whole days — they are stored as
+ * 00:00 local time on the chosen date — so the time is deliberately not shown.
+ */
 export function formatDate(date: string | null | undefined) {
+  if (!date) return "—";
+  return new Date(date).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+/** Format a real moment in time (an upload, a sign-in), where the clock matters. */
+export function formatDateTime(date: string | null | undefined) {
   if (!date) return "—";
   return new Date(date).toLocaleString(undefined, {
     year: "numeric",

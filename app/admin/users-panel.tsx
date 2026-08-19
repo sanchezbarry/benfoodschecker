@@ -6,7 +6,7 @@ import { KeyRound, Loader2, Trash2, UserPlus } from "lucide-react";
 
 import { createUser, deleteUser, updateUser, type AdminState } from "./actions";
 import type { AppUser } from "@/lib/types";
-import { formatDate } from "@/lib/utils";
+import { formatDateTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -72,7 +72,7 @@ function UserRow({ user, currentUserId }: { user: AppUser; currentUserId: string
         {isSelf && <Badge variant="outline">you</Badge>}
         <span className="ml-auto text-xs text-muted-foreground">
           {user.last_sign_in_at
-            ? `last seen ${formatDate(user.last_sign_in_at)}`
+            ? `last seen ${formatDateTime(user.last_sign_in_at)}`
             : "never signed in"}
         </span>
       </summary>

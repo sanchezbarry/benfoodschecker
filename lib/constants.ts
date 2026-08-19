@@ -2,10 +2,29 @@
 
 export const DOCUMENTS_BUCKET = "documents";
 
-/** Max upload size in bytes (10 MB). Enforced client-side, in the action, and on the bucket. */
-export const MAX_FILE_SIZE = 10 * 1024 * 1024;
+/**
+ * Max size of the file that finally lands in the bucket, after any compression.
+ * Enforced in the browser, in the Server Action (re-read from storage), and by
+ * the bucket itself.
+ *
+ * 25 MB rather than 10: real certificates include multi-page scan bundles that
+ * measured 11 MB and 17 MB, which a 10 MB cap rejected outright. Uploads go
+ * straight from the browser to Supabase, so Vercel's 4.5 MB function body limit
+ * doesn't apply and the bucket's own limit is the only ceiling.
+ */
+export const MAX_FILE_SIZE = 25 * 1024 * 1024;
 
-export const MAX_FILE_SIZE_LABEL = "10 MB";
+export const MAX_FILE_SIZE_LABEL = "25 MB";
+
+/**
+ * Max size of the file a user may *select*. Images are downscaled and
+ * re-encoded before upload, so a 20 MB photo is fine even though a 20 MB
+ * stored file is not — this ceiling only exists to stop the browser trying to
+ * decode something absurd and running out of memory.
+ */
+export const MAX_UPLOAD_INPUT_SIZE = 40 * 1024 * 1024;
+
+export const MAX_UPLOAD_INPUT_SIZE_LABEL = "40 MB";
 
 /** Accepted MIME types: PDFs and common images. */
 export const ACCEPTED_MIME_TYPES = [

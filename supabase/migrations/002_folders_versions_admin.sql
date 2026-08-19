@@ -12,10 +12,15 @@
 --   • adds `document_versions` and seeds version 1 from each existing document
 --   • replaces the RLS + storage policies so admins can see everything
 --
--- It is wrapped in a transaction: if any step fails, nothing is applied.
+-- Safe to run more than once, and safe to run a section at a time: every step
+-- is guarded (`if not exists`, `is null`, `if exists`), so a re-run is a no-op
+-- rather than an error.
+--
+-- NOTE: there is deliberately no `begin;` / `commit;` wrapper. The Supabase SQL
+-- Editor already runs each execution in its own transaction, so the whole file
+-- pasted at once is still atomic — but an explicit transaction spanning the
+-- file would be silently rolled back if you ran the sections one by one.
 -- ============================================================================
-
-begin;
 
 -- ---------------------------------------------------------------------------
 -- 1) Admin role  (see the comment in schema.sql — keep the email list in sync
@@ -70,8 +75,19 @@ set folder_id = f.id
 from public.folders f
 where d.folder_id is null and upper(f.code) = 'UNSORTED';
 
--- The old free-text `name` becomes the certificate type.
-update public.documents set cert_type = name where cert_type is null;
+-- The old free-text `name` becomes the certificate type. Guarded, because the
+-- column is dropped further down: on a re-run there is no `name` to read.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'documents'
+      and column_name = 'name'
+  ) then
+    execute 'update public.documents set cert_type = name where cert_type is null';
+  end if;
+end $$;
 
 -- PIC comes from the owner's display name, falling back to their email handle.
 update public.documents d
@@ -219,6 +235,16 @@ create policy "versions - follow parent document: delete"
 
 -- ---------------------------------------------------------------------------
 -- 6) Storage policies — let admins read and clean up every user's files
+--
+-- `storage.objects` is owned by `supabase_storage_admin`. On some projects the
+-- SQL Editor role can't alter it and this section alone fails with:
+--
+--     ERROR: 42501: must be owner of table objects
+--
+-- Everything above is already committed at that point, so the app still works;
+-- only cross-user admin file access is missing. If you hit it, add the three
+-- policies through the dashboard instead: Storage -> Policies -> documents ->
+-- New policy -> "For full customization", pasting the expressions below.
 -- ---------------------------------------------------------------------------
 drop policy if exists "own files - read" on storage.objects;
 drop policy if exists "own files - insert" on storage.objects;
@@ -241,5 +267,3 @@ create policy "documents bucket - own or admin: delete"
   on storage.objects for delete to authenticated
   using (bucket_id = 'documents'
          and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin()));
-
-commit;
