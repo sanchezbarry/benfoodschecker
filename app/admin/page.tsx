@@ -21,7 +21,7 @@ export default async function AdminPage() {
   if (!user) redirect("/login");
   if (!admin) redirect("/dashboard");
 
-  const [{ users, missingAdminEmails }, folders, certificates] =
+  const [{ users, missingAccounts }, folders, certificates] =
     await Promise.all([listUsers(), listFolders(), listCertificates()]);
 
   return (
@@ -52,7 +52,7 @@ export default async function AdminPage() {
       <main className="mx-auto w-full max-w-4xl flex-1 space-y-6 p-4 sm:p-6">
         <UsersPanel
           users={users}
-          missingAdminEmails={missingAdminEmails}
+          missingAccounts={missingAccounts}
           currentUserId={user.id}
         />
         <FoldersPanel folders={folders} />

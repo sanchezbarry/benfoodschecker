@@ -1,3 +1,5 @@
+import type { AppRole } from "@/lib/auth";
+
 export type DocumentStatus = "active" | "notified" | "escalated";
 
 /** A vendor / customer. Every certificate is filed inside exactly one folder. */
@@ -64,10 +66,17 @@ export interface AppUser {
   id: string;
   email: string;
   full_name: string;
-  is_admin: boolean;
+  role: AppRole;
+  /** A permanent admin: the role selector is locked for these. */
   is_bootstrap_admin: boolean;
   created_at: string;
   last_sign_in_at: string | null;
+}
+
+/** An account the admin console suggests creating because it doesn't exist yet. */
+export interface SuggestedAccount {
+  email: string;
+  role: AppRole;
 }
 
 /** Values already used elsewhere, offered as dropdown hints on free-text fields. */

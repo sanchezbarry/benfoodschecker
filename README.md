@@ -85,27 +85,47 @@ Because each email is tied to a status transition, the job is **idempotent** —
 running it repeatedly never double-sends. Uploading a new version resets the
 status to `active`, which re-arms the workflow against the new expiry date.
 
-### Who sees what
+### Roles
 
-- A signed-in user sees **only their own certificates**.
-- An **admin** sees everyone's, and can reach `/admin`.
-- The dropdown hints on the certificate form (vendor codes and names,
-  certificate types, contact emails) are drawn from what the **whole company**
-  has already entered, so everyone reuses the same vocabulary. Only distinct
-  values are read — never other people's certificate rows.
+Three roles, stored in `app_metadata.role` on the auth user — writable only by
+the service-role key, so nobody can promote themselves. An admin sets them from
+the role selector in `/admin`.
 
-### Admins
+| Role | Sees | Can change | Reaches `/admin` |
+| --- | --- | --- | --- |
+| `admin` | every certificate | everything | yes |
+| `department` | every certificate | **nothing** | no |
+| `user` (default) | only its own | only its own | no |
 
-`tester@test.com` and `mis-help@benfoods.com` are permanent administrators.
-They're listed in two places that must stay in sync:
+`department` is the view-and-download account — for a team that needs oversight
+of every vendor's compliance without touching the records. `marketing@benfoods.com`
+is the first of these; the admin console prompts to create it if it doesn't exist.
+
+Read access widens for `department`; write access deliberately does not. Note
+that "owns nothing, so can't write anything" is **not** sufficient on its own —
+without an explicit `can_write()` on the insert policies a department user could
+create a row with their own uid as `user_id` and become its owner. So each write
+policy carries that check, and each write Server Action re-derives the same
+capability from the session. Hiding a form is never the boundary: a Server Action
+is a reachable POST endpoint whether or not any UI calls it.
+
+The dropdown hints on the certificate form (vendor codes and names, certificate
+types, contact emails) are drawn from what the **whole company** has already
+entered, so everyone reuses the same vocabulary. Only distinct values are read —
+never other people's certificate rows.
+
+### Permanent admins
+
+`tester@test.com` and `mis-help@benfoods.com` are admins no matter what their
+metadata says, so the console can never be locked out. They're listed in two
+places that must stay in sync:
 
 - [`BOOTSTRAP_ADMIN_EMAILS`](lib/auth.ts) — the app
-- `public.is_admin()` in [`supabase/schema.sql`](supabase/schema.sql) — row level
+- `public.app_role()` in [`supabase/schema.sql`](supabase/schema.sql) — row level
   security
 
-Beyond those two, admin rights are stored as `app_metadata.role = "admin"` on the
-auth user, which only the service-role key can write — so nobody can promote
-themselves. Toggle it with the **Administrator** checkbox in the admin console.
+Their role selector is disabled in the console, and an admin cannot demote
+themselves — that would lock them out on the next page load.
 
 ---
 
@@ -116,8 +136,11 @@ themselves. Toggle it with the **Administrator** checkbox in the admin console.
 1. Create a project at [supabase.com](https://supabase.com).
 2. Open **SQL Editor** and run:
    - a fresh project → [`supabase/schema.sql`](supabase/schema.sql)
-   - an existing v1 database (a `documents` table with a `name` column and no
-     folders) → [`supabase/migrations/002_folders_versions_admin.sql`](supabase/migrations/002_folders_versions_admin.sql).
+   - an existing database → the numbered files in
+     [`supabase/migrations/`](supabase/migrations) in order. `002` is the big one
+     (folders + versioning); `003` raises the bucket size limit; `004` adds the
+     `department` role. `002` specifically applies to a v1 database (a
+     `documents` table with a `name` column and no folders).
      It backfills every existing certificate into an `UNSORTED` folder, turns its
      old `name` into the certificate type, and seeds version 1 of each file.
      Every step is guarded, so it is safe to re-run and safe to execute a

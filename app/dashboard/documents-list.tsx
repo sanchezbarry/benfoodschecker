@@ -109,7 +109,13 @@ function DeleteVersionButton({ version }: { version: DocumentVersion }) {
   );
 }
 
-function VersionHistory({ doc }: { doc: CertDocument }) {
+function VersionHistory({
+  doc,
+  canWrite,
+}: {
+  doc: CertDocument;
+  canWrite: boolean;
+}) {
   const versions = [...(doc.versions ?? [])].sort(
     (a, b) => b.version - a.version,
   );
@@ -143,7 +149,7 @@ function VersionHistory({ doc }: { doc: CertDocument }) {
             </span>
             <span className="flex items-center gap-1">
               <ViewButton path={v.file_path} label="Open" />
-              {!v.is_current && <DeleteVersionButton version={v} />}
+              {canWrite && !v.is_current && <DeleteVersionButton version={v} />}
             </span>
           </li>
         ))}
@@ -152,7 +158,7 @@ function VersionHistory({ doc }: { doc: CertDocument }) {
   );
 }
 
-function CertRow({ doc }: { doc: CertDocument }) {
+function CertRow({ doc, canWrite }: { doc: CertDocument; canWrite: boolean }) {
   return (
     <div className="rounded-lg border p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -177,10 +183,10 @@ function CertRow({ doc }: { doc: CertDocument }) {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <ViewButton path={doc.file_path} />
-          <DeleteDocumentButton doc={doc} />
+          {canWrite && <DeleteDocumentButton doc={doc} />}
         </div>
       </div>
-      <VersionHistory doc={doc} />
+      <VersionHistory doc={doc} canWrite={canWrite} />
     </div>
   );
 }
@@ -208,10 +214,14 @@ function groupByFolder(documents: CertDocument[]) {
 
 export function DocumentsList({
   documents,
-  isAdmin,
+  viewAll,
+  canWrite,
 }: {
   documents: CertDocument[];
-  isAdmin: boolean;
+  /** Whether this account sees everyone's certificates, not just its own. */
+  viewAll: boolean;
+  /** Department accounts are view-only, so their delete controls are dropped. */
+  canWrite: boolean;
 }) {
   if (documents.length === 0) {
     return (
@@ -219,7 +229,9 @@ export function DocumentsList({
         <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
           <FileText className="size-8 text-muted-foreground" />
           <p className="text-sm text-muted-foreground">
-            No certificates yet. Add your first one above.
+            {canWrite
+              ? "No certificates yet. Add your first one above."
+              : "No certificates have been filed yet."}
           </p>
         </CardContent>
       </Card>
@@ -236,7 +248,8 @@ export function DocumentsList({
           {documents.length} certificate{documents.length === 1 ? "" : "s"}{" "}
           across {groups.length} vendor
           {groups.length === 1 ? "" : "s"}
-          {isAdmin ? " — showing every user's, because you're an admin." : "."}
+          {viewAll ? " — showing every user's." : "."}
+          {!canWrite && " Downloads only; nothing here can be changed."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -250,7 +263,7 @@ export function DocumentsList({
             </h3>
             <div className="space-y-3">
               {group.docs.map((doc) => (
-                <CertRow key={doc.id} doc={doc} />
+                <CertRow key={doc.id} doc={doc} canWrite={canWrite} />
               ))}
             </div>
           </section>

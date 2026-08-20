@@ -13,24 +13,56 @@
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
--- 0) Admin role
+-- 0) Roles
 -- ---------------------------------------------------------------------------
--- Source of truth is `app_metadata.role = 'admin'` on the auth user, stamped by
--- the admin console through the service-role key (users cannot set it
--- themselves). The email list is a bootstrap fallback so the two named accounts
--- are admins from the very first login, before any metadata exists.
+-- Source of truth is `app_metadata.role` on the auth user, stamped by the admin
+-- console through the service-role key (users cannot set it themselves):
+--
+--   admin       everything: sees all certificates, manages users and folders
+--   department  read-only:  sees all certificates, may download, changes nothing
+--   user        the default: sees and manages only its own certificates
+--
+-- The email list is a bootstrap fallback so the two named accounts are admins
+-- from the very first login, before any metadata exists.
 --
 -- Keep the list in sync with BOOTSTRAP_ADMIN_EMAILS in lib/auth.ts.
+create or replace function public.app_role()
+returns text
+language sql
+stable
+as $$
+  select case
+    when lower(coalesce(auth.jwt() ->> 'email', '')) = any (
+      array['tester@test.com', 'mis-help@benfoods.com']
+    ) then 'admin'
+    else coalesce(nullif(auth.jwt() -> 'app_metadata' ->> 'role', ''), 'user')
+  end;
+$$;
+
 create or replace function public.is_admin()
 returns boolean
 language sql
 stable
 as $$
-  select
-    coalesce(auth.jwt() -> 'app_metadata' ->> 'role', '') = 'admin'
-    or lower(coalesce(auth.jwt() ->> 'email', '')) = any (
-      array['tester@test.com', 'mis-help@benfoods.com']
-    );
+  select public.app_role() = 'admin';
+$$;
+
+/* Admins and department users both see every certificate. */
+create or replace function public.can_view_all()
+returns boolean
+language sql
+stable
+as $$
+  select public.app_role() in ('admin', 'department');
+$$;
+
+/* Department users are strictly read-only; everyone else may write. */
+create or replace function public.can_write()
+returns boolean
+language sql
+stable
+as $$
+  select public.app_role() <> 'department';
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -127,7 +159,7 @@ create policy "folders - read for all signed-in users"
 create policy "folders - any signed-in user may add"
   on public.folders for insert
   to authenticated
-  with check (auth.uid() is not null);
+  with check (auth.uid() is not null and public.can_write());
 
 create policy "folders - admins may amend"
   on public.folders for update
@@ -142,26 +174,29 @@ create policy "folders - admins may delete"
 
 alter table public.documents enable row level security;
 
-create policy "documents - own or admin: select"
+-- Department users read everything but own nothing. Owning nothing is not by
+-- itself enough to stop them writing — without can_write() they could insert a
+-- row with their own uid as user_id and become its owner.
+create policy "documents - own or view-all: select"
   on public.documents for select
   to authenticated
-  using (auth.uid() = user_id or public.is_admin());
+  using (auth.uid() = user_id or public.can_view_all());
 
 create policy "documents - own: insert"
   on public.documents for insert
   to authenticated
-  with check (auth.uid() = user_id);
+  with check (auth.uid() = user_id and public.can_write());
 
 create policy "documents - own or admin: update"
   on public.documents for update
   to authenticated
-  using (auth.uid() = user_id or public.is_admin())
-  with check (auth.uid() = user_id or public.is_admin());
+  using ((auth.uid() = user_id or public.is_admin()) and public.can_write())
+  with check ((auth.uid() = user_id or public.is_admin()) and public.can_write());
 
 create policy "documents - own or admin: delete"
   on public.documents for delete
   to authenticated
-  using (auth.uid() = user_id or public.is_admin());
+  using ((auth.uid() = user_id or public.is_admin()) and public.can_write());
 
 alter table public.document_versions enable row level security;
 
@@ -173,7 +208,7 @@ create policy "versions - follow parent document: select"
     exists (
       select 1 from public.documents d
       where d.id = document_id
-        and (d.user_id = auth.uid() or public.is_admin())
+        and (d.user_id = auth.uid() or public.can_view_all())
     )
   );
 
@@ -181,7 +216,7 @@ create policy "versions - follow parent document: insert"
   on public.document_versions for insert
   to authenticated
   with check (
-    exists (
+    public.can_write() and exists (
       select 1 from public.documents d
       where d.id = document_id
         and (d.user_id = auth.uid() or public.is_admin())
@@ -192,7 +227,7 @@ create policy "versions - follow parent document: update"
   on public.document_versions for update
   to authenticated
   using (
-    exists (
+    public.can_write() and exists (
       select 1 from public.documents d
       where d.id = document_id
         and (d.user_id = auth.uid() or public.is_admin())
@@ -203,7 +238,7 @@ create policy "versions - follow parent document: delete"
   on public.document_versions for delete
   to authenticated
   using (
-    exists (
+    public.can_write() and exists (
       select 1 from public.documents d
       where d.id = document_id
         and (d.user_id = auth.uid() or public.is_admin())
@@ -230,12 +265,12 @@ on conflict (id) do update
 
 -- Files live under `<user_id>/<uuid>.<ext>`. Users may only touch their own
 -- folder; admins can read (and clean up) everything.
-create policy "documents bucket - own or admin: read"
+create policy "documents bucket - own or view-all: read"
   on storage.objects for select
   to authenticated
   using (
     bucket_id = 'documents'
-    and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
+    and ((storage.foldername(name))[1] = auth.uid()::text or public.can_view_all())
   );
 
 create policy "documents bucket - own: insert"
@@ -244,6 +279,7 @@ create policy "documents bucket - own: insert"
   with check (
     bucket_id = 'documents'
     and (storage.foldername(name))[1] = auth.uid()::text
+    and public.can_write()
   );
 
 create policy "documents bucket - own or admin: delete"
@@ -252,6 +288,7 @@ create policy "documents bucket - own or admin: delete"
   using (
     bucket_id = 'documents'
     and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
+    and public.can_write()
   );
 
 -- ============================================================================

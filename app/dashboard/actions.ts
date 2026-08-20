@@ -15,6 +15,13 @@ import {
 export type ActionState = { error?: string; success?: string } | null;
 export type UploadTicket = { path: string; token: string } | { error: string };
 
+/*
+ * Department accounts read everything and change nothing. Hiding the forms is
+ * not a boundary — a Server Action is a reachable POST endpoint either way —
+ * so every write below re-derives `write` from the session, and the RLS
+ * policies enforce the same rule independently at the database.
+ */
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
@@ -51,8 +58,9 @@ type SessionClient = Awaited<ReturnType<typeof getSession>>["supabase"];
 export async function createUploadTicket(
   contentType: string,
 ): Promise<UploadTicket> {
-  const { supabase, user } = await getSession();
+  const { supabase, user, write } = await getSession();
   if (!user) return { error: "You must be signed in." };
+  if (!write) return { error: "Your account is view-only, so it can't change certificates." };
 
   const extension = EXTENSION_BY_MIME[contentType];
   if (!extension)
@@ -146,8 +154,9 @@ export async function createDocument(
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  const { supabase, user } = await getSession();
+  const { supabase, user, write } = await getSession();
   if (!user) return { error: "You must be signed in." };
+  if (!write) return { error: "Your account is view-only, so it can't change certificates." };
 
   const filePath = String(formData.get("file_path") ?? "");
 
@@ -288,8 +297,9 @@ export async function uploadNewVersion(
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  const { supabase, user } = await getSession();
+  const { supabase, user, write } = await getSession();
   if (!user) return { error: "You must be signed in." };
+  if (!write) return { error: "Your account is view-only, so it can't change certificates." };
 
   const filePath = String(formData.get("file_path") ?? "");
   const fail = async (error: string): Promise<ActionState> => {
@@ -417,8 +427,8 @@ export async function deleteVersion(formData: FormData): Promise<void> {
   const versionId = String(formData.get("version_id") ?? "");
   if (!versionId) return;
 
-  const { supabase, user } = await getSession();
-  if (!user) return;
+  const { supabase, user, write } = await getSession();
+  if (!user || !write) return;
 
   // RLS limits this to versions of certificates the caller can see. The
   // is_current guard keeps the tracked file from being pulled out from under
@@ -444,8 +454,8 @@ export async function deleteDocument(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   if (!id) return;
 
-  const { supabase, user } = await getSession();
-  if (!user) return;
+  const { supabase, user, write } = await getSession();
+  if (!user || !write) return;
 
   // Read the paths back from the database rather than trusting the form, and
   // let RLS decide whether this caller may see the row at all.

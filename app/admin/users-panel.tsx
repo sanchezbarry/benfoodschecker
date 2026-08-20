@@ -1,16 +1,18 @@
 "use client";
 
-import { useActionState, useEffect, useRef } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { KeyRound, Loader2, Trash2, UserPlus } from "lucide-react";
 
 import { createUser, deleteUser, updateUser, type AdminState } from "./actions";
-import type { AppUser } from "@/lib/types";
+import type { AppUser, SuggestedAccount } from "@/lib/types";
+import { ROLE_LABELS, type AppRole } from "@/lib/auth";
 import { formatDateTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import {
   Card,
   CardContent,
@@ -27,6 +29,62 @@ function Pending({ idle, busy }: { idle: React.ReactNode; busy: string }) {
       {pending ? busy : idle}
     </Button>
   );
+}
+
+const ROLE_ORDER: AppRole[] = ["user", "department", "admin"];
+
+const ROLE_HELP: Record<AppRole, string> = {
+  user: "Sees and manages only their own certificates.",
+  department: "Sees and downloads every certificate. Cannot add, edit or delete anything.",
+  admin: "Full access, including this console.",
+};
+
+function RoleField({
+  id,
+  defaultValue,
+  locked,
+}: {
+  id: string;
+  defaultValue: AppRole;
+  locked?: boolean;
+}) {
+  const [role, setRole] = useState<AppRole>(defaultValue);
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id}>Role</Label>
+      <Select
+        id={id}
+        name="role"
+        value={role}
+        disabled={locked}
+        onChange={(e) => setRole(e.target.value as AppRole)}
+      >
+        {ROLE_ORDER.map((r) => (
+          <option key={r} value={r}>
+            {ROLE_LABELS[r]}
+          </option>
+        ))}
+      </Select>
+      <p className="text-xs text-muted-foreground">
+        {locked
+          ? "Permanent admin account — the role can't be changed."
+          : ROLE_HELP[role]}
+      </p>
+      {/* A disabled select submits nothing, so keep the value in the payload. */}
+      {locked && <input type="hidden" name="role" value={role} />}
+    </div>
+  );
+}
+
+function RoleBadge({ user }: { user: AppUser }) {
+  if (user.role === "admin")
+    return (
+      <Badge variant={user.is_bootstrap_admin ? "default" : "secondary"}>
+        {user.is_bootstrap_admin ? "admin (permanent)" : "admin"}
+      </Badge>
+    );
+  if (user.role === "department") return <Badge variant="warning">department</Badge>;
+  return <Badge variant="outline">user</Badge>;
 }
 
 function Feedback({ state }: { state: AdminState }) {
@@ -64,12 +122,8 @@ function UserRow({ user, currentUserId }: { user: AppUser; currentUserId: string
       <summary className="flex cursor-pointer flex-wrap items-center gap-2 p-4">
         <span className="font-medium">{user.full_name}</span>
         <span className="text-sm text-muted-foreground">{user.email}</span>
-        {user.is_admin && (
-          <Badge variant={user.is_bootstrap_admin ? "default" : "secondary"}>
-            {user.is_bootstrap_admin ? "admin (permanent)" : "admin"}
-          </Badge>
-        )}
-        {isSelf && <Badge variant="outline">you</Badge>}
+        <RoleBadge user={user} />
+        {isSelf && <Badge variant="secondary">you</Badge>}
         <span className="ml-auto text-xs text-muted-foreground">
           {user.last_sign_in_at
             ? `last seen ${formatDateTime(user.last_sign_in_at)}`
@@ -111,23 +165,11 @@ function UserRow({ user, currentUserId }: { user: AppUser; currentUserId: string
                 minLength={8}
               />
             </div>
-            <div className="flex items-end">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  name="is_admin"
-                  defaultChecked={user.is_admin}
-                  disabled={user.is_bootstrap_admin}
-                  className="size-4 accent-primary"
-                />
-                Administrator
-                {user.is_bootstrap_admin && (
-                  <span className="text-xs text-muted-foreground">
-                    (always on for this account)
-                  </span>
-                )}
-              </label>
-            </div>
+            <RoleField
+              id={`role-${user.id}`}
+              defaultValue={user.role}
+              locked={user.is_bootstrap_admin}
+            />
           </div>
           <Feedback state={editState} />
           <Pending idle={<><KeyRound />Save changes</>} busy="Saving…" />
@@ -172,11 +214,11 @@ function UserRow({ user, currentUserId }: { user: AppUser; currentUserId: string
 
 export function UsersPanel({
   users,
-  missingAdminEmails,
+  missingAccounts,
   currentUserId,
 }: {
   users: AppUser[];
-  missingAdminEmails: string[];
+  missingAccounts: SuggestedAccount[];
   currentUserId: string;
 }) {
   const [state, formAction] = useActionState<AdminState, FormData>(
@@ -194,23 +236,30 @@ export function UsersPanel({
       <CardHeader>
         <CardTitle>Users</CardTitle>
         <CardDescription>
-          Create accounts, change names, emails and passwords, and grant or
-          revoke admin access. Sign-up is closed to the public — every account
-          starts here. The name you set becomes the PIC on that person&apos;s
+          Create accounts, change names, emails and passwords, and set what each
+          person can do. Sign-up is closed to the public — every account starts
+          here. The name you set becomes the PIC on that person&apos;s
           certificates.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {missingAdminEmails.length > 0 && (
+        {missingAccounts.length > 0 && (
           <div
-            className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm text-warning"
+            className="space-y-1 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm text-warning"
             role="status"
           >
-            {missingAdminEmails.join(" and ")}{" "}
-            {missingAdminEmails.length === 1 ? "is" : "are"} designated
-            administrator{missingAdminEmails.length === 1 ? "" : "s"} with no
-            account yet. Create {missingAdminEmails.length === 1 ? "it" : "them"}{" "}
-            below — admin rights are granted automatically.
+            <p className="font-medium">
+              {missingAccounts.length} designated account
+              {missingAccounts.length === 1 ? "" : "s"} not created yet:
+            </p>
+            <ul className="list-inside list-disc">
+              {missingAccounts.map((a) => (
+                <li key={a.email}>
+                  {a.email} — {ROLE_LABELS[a.role]}
+                </li>
+              ))}
+            </ul>
+            <p>The form below is pre-filled with the first of them.</p>
           </div>
         )}
 
@@ -231,7 +280,7 @@ export function UsersPanel({
                 id="new_email"
                 name="email"
                 type="email"
-                defaultValue={missingAdminEmails[0] ?? ""}
+                defaultValue={missingAccounts[0]?.email ?? ""}
                 placeholder="person@benfoods.com"
                 required
               />
@@ -248,16 +297,10 @@ export function UsersPanel({
                 required
               />
             </div>
-            <div className="flex items-end">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  name="is_admin"
-                  className="size-4 accent-primary"
-                />
-                Administrator
-              </label>
-            </div>
+            <RoleField
+              id="new_role"
+              defaultValue={missingAccounts[0]?.role ?? "user"}
+            />
           </div>
           <Feedback state={state} />
           <Pending idle={<><UserPlus />Create user</>} busy="Creating…" />

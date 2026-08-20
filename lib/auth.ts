@@ -1,6 +1,19 @@
 import type { User } from "@supabase/supabase-js";
 
 /**
+ * What a signed-in account may do.
+ *
+ *   admin       everything: all certificates, plus users and folders
+ *   department  read-only:  all certificates, may download, changes nothing
+ *   user        the default: only its own certificates
+ *
+ * Stored in `app_metadata.role`, which only the service-role key can write, so
+ * nobody can promote themselves. Mirrored by public.app_role() in
+ * supabase/schema.sql.
+ */
+export type AppRole = "admin" | "department" | "user";
+
+/**
  * Accounts that are admins no matter what.
  *
  * The real source of truth is `app_metadata.role === "admin"`, which only the
@@ -23,12 +36,45 @@ export function isBootstrapAdmin(email: string | null | undefined): boolean {
   return BOOTSTRAP_ADMIN_EMAILS.some((e) => e === normalised);
 }
 
-/** Whether a signed-in user may reach /admin and see every user's certificates. */
-export function isAdmin(user: User | null | undefined): boolean {
-  if (!user) return false;
-  if (user.app_metadata?.role === "admin") return true;
-  return isBootstrapAdmin(user.email);
+/**
+ * Accounts the admin console offers to create if they don't exist yet. Purely a
+ * convenience prompt — unlike BOOTSTRAP_ADMIN_EMAILS this grants nothing, the
+ * role still comes from app_metadata once the account is made.
+ */
+export const SUGGESTED_DEPARTMENT_EMAILS = ["marketing@benfoods.com"] as const;
+
+/** Resolve a user's role. Bootstrap admins outrank whatever metadata says. */
+export function roleOf(user: User | null | undefined): AppRole {
+  if (!user) return "user";
+  if (isBootstrapAdmin(user.email)) return "admin";
+  const role = user.app_metadata?.role;
+  return role === "admin" || role === "department" ? role : "user";
 }
+
+/** May reach /admin, and manage users, folders and everyone's certificates. */
+export function isAdmin(user: User | null | undefined): boolean {
+  return !!user && roleOf(user) === "admin";
+}
+
+/** Sees every certificate. True for admins and department users alike. */
+export function canViewAll(user: User | null | undefined): boolean {
+  const role = roleOf(user);
+  return !!user && (role === "admin" || role === "department");
+}
+
+/**
+ * May create, amend or delete anything at all. Department users are strictly
+ * read-only, so this is the one gate every write has to pass.
+ */
+export function canWrite(user: User | null | undefined): boolean {
+  return !!user && roleOf(user) !== "department";
+}
+
+export const ROLE_LABELS: Record<AppRole, string> = {
+  admin: "Administrator",
+  department: "Department — view & download only",
+  user: "Standard user",
+};
 
 /**
  * The name shown as PIC on certificates this user creates. Admins set

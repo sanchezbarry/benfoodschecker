@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { getSession } from "@/lib/session";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { isBootstrapAdmin } from "@/lib/auth";
+import { ROLE_LABELS, isBootstrapAdmin, type AppRole } from "@/lib/auth";
 import {
   sendEscalationEmail,
   sendExpiryEmail,
@@ -17,6 +17,17 @@ export type AdminState = { error?: string; success?: string } | null;
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_PASSWORD_LENGTH = 8;
+
+/**
+ * The role comes off a form, so treat it as untrusted: anything unrecognised
+ * falls back to the least-privileged option rather than being taken at face
+ * value. Bootstrap admin emails are forced to admin regardless.
+ */
+function readRole(formData: FormData, email: string): AppRole {
+  if (isBootstrapAdmin(email)) return "admin";
+  const value = String(formData.get("role") ?? "");
+  return value === "admin" || value === "department" ? value : "user";
+}
 
 /**
  * Every export in this file is a reachable POST endpoint, so each action
@@ -42,7 +53,6 @@ export async function createUser(
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   const password = String(formData.get("password") ?? "");
   const fullName = String(formData.get("full_name") ?? "").trim();
-  const makeAdmin = formData.get("is_admin") === "on";
 
   if (!EMAIL_RE.test(email)) return { error: "Enter a valid email address." };
   if (password.length < MIN_PASSWORD_LENGTH)
@@ -55,6 +65,8 @@ export async function createUser(
         "Enter the person's name — it is used as the PIC on their certificates.",
     };
 
+  const role = readRole(formData, email);
+
   const admin = createAdminClient();
   const { error } = await admin.auth.admin.createUser({
     email,
@@ -62,15 +74,15 @@ export async function createUser(
     // Admin-created accounts are trusted, so skip the confirmation email.
     email_confirm: true,
     user_metadata: { full_name: fullName },
-    app_metadata: {
-      role: makeAdmin || isBootstrapAdmin(email) ? "admin" : "user",
-    },
+    app_metadata: { role },
   });
 
   if (error) return { error: error.message };
 
   revalidatePath("/admin");
-  return { success: `${fullName} (${email}) can now sign in.` };
+  return {
+    success: `${fullName} (${email}) can now sign in as: ${ROLE_LABELS[role]}.`,
+  };
 }
 
 export async function updateUser(
@@ -84,7 +96,6 @@ export async function updateUser(
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   const fullName = String(formData.get("full_name") ?? "").trim();
   const password = String(formData.get("password") ?? "");
-  const makeAdmin = formData.get("is_admin") === "on";
 
   if (!userId) return { error: "Missing user." };
   if (!EMAIL_RE.test(email)) return { error: "Enter a valid email address." };
@@ -94,9 +105,11 @@ export async function updateUser(
       error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
     };
 
-  // Removing your own admin rights would lock you out of this console on the
-  // next page load, so refuse rather than let it happen mid-session.
-  if (userId === session.user.id && !makeAdmin) {
+  const role = readRole(formData, email);
+
+  // Demoting yourself would lock you out of this console on the next page load,
+  // so refuse rather than let it happen mid-session.
+  if (userId === session.user.id && role !== "admin") {
     return { error: "You can't remove your own admin access." };
   }
 
@@ -104,21 +117,16 @@ export async function updateUser(
   const { error } = await admin.auth.admin.updateUserById(userId, {
     email,
     user_metadata: { full_name: fullName },
-    app_metadata: {
-      // The named admin accounts stay admins whatever the checkbox says —
-      // public.is_admin() falls back to their email regardless.
-      role: makeAdmin || isBootstrapAdmin(email) ? "admin" : "user",
-    },
+    app_metadata: { role },
     ...(password ? { password } : {}),
   });
 
   if (error) return { error: error.message };
 
   revalidatePath("/admin");
+  revalidatePath("/dashboard");
   return {
-    success: password
-      ? `${fullName} updated, including a new password.`
-      : `${fullName} updated.`,
+    success: `${fullName} updated (${ROLE_LABELS[role]})${password ? ", including a new password" : ""}.`,
   };
 }
 

@@ -1,10 +1,10 @@
 import { createClient } from "@/lib/supabase/server";
-import { isAdmin } from "@/lib/auth";
+import { canViewAll, canWrite, isAdmin, roleOf } from "@/lib/auth";
 
 /**
  * The signed-in user plus a ready-to-use server client, for Server Components
- * and Server Actions. `admin` is re-derived from the session on every call —
- * never trust an admin flag that arrived from the browser.
+ * and Server Actions. Every capability is re-derived from the session on each
+ * call — never trust a role or flag that arrived from the browser.
  */
 export async function getSession() {
   const supabase = await createClient();
@@ -12,5 +12,14 @@ export async function getSession() {
     data: { user },
   } = await supabase.auth.getUser();
 
-  return { supabase, user, admin: isAdmin(user) };
+  return {
+    supabase,
+    user,
+    role: roleOf(user),
+    admin: isAdmin(user),
+    /** Sees every certificate: admins and department users. */
+    viewAll: canViewAll(user),
+    /** May change anything at all: false only for department users. */
+    write: canWrite(user),
+  };
 }

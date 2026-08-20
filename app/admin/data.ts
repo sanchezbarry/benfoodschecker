@@ -2,11 +2,17 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import {
   BOOTSTRAP_ADMIN_EMAILS,
+  SUGGESTED_DEPARTMENT_EMAILS,
   displayName,
-  isAdmin,
   isBootstrapAdmin,
+  roleOf,
 } from "@/lib/auth";
-import type { AppUser, CertDocument, FolderWithCount } from "@/lib/types";
+import type {
+  AppUser,
+  CertDocument,
+  FolderWithCount,
+  SuggestedAccount,
+} from "@/lib/types";
 
 /**
  * Read-only loaders for the admin console.
@@ -16,10 +22,10 @@ import type { AppUser, CertDocument, FolderWithCount } from "@/lib/types";
  * page guards access before calling them.
  */
 
-/** Every account, plus which of the named admin emails has no account yet. */
+/** Every account, plus any named account that doesn't exist yet. */
 export async function listUsers(): Promise<{
   users: AppUser[];
-  missingAdminEmails: string[];
+  missingAccounts: SuggestedAccount[];
 }> {
   const admin = createAdminClient();
   const { data, error } = await admin.auth.admin.listUsers({
@@ -27,14 +33,14 @@ export async function listUsers(): Promise<{
     perPage: 200,
   });
 
-  if (error || !data) return { users: [], missingAdminEmails: [] };
+  if (error || !data) return { users: [], missingAccounts: [] };
 
   const users: AppUser[] = data.users
     .map((u) => ({
       id: u.id,
       email: u.email ?? "",
       full_name: displayName(u),
-      is_admin: isAdmin(u),
+      role: roleOf(u),
       is_bootstrap_admin: isBootstrapAdmin(u.email),
       created_at: u.created_at,
       last_sign_in_at: u.last_sign_in_at ?? null,
@@ -42,11 +48,15 @@ export async function listUsers(): Promise<{
     .sort((a, b) => a.email.localeCompare(b.email));
 
   const existing = new Set(users.map((u) => u.email.toLowerCase()));
-  const missingAdminEmails = BOOTSTRAP_ADMIN_EMAILS.filter(
-    (email) => !existing.has(email),
-  );
+  const missingAccounts: SuggestedAccount[] = [
+    ...BOOTSTRAP_ADMIN_EMAILS.map((email) => ({ email, role: "admin" as const })),
+    ...SUGGESTED_DEPARTMENT_EMAILS.map((email) => ({
+      email,
+      role: "department" as const,
+    })),
+  ].filter((a) => !existing.has(a.email));
 
-  return { users, missingAdminEmails };
+  return { users, missingAccounts };
 }
 
 /** Vendor / customer folders with how many certificates each holds. */
