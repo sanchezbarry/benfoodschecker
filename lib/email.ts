@@ -6,6 +6,43 @@ import { APP_URL } from "@/lib/constants";
 const FROM = process.env.EMAIL_FROM ?? "Cert Checker <onboarding@resend.dev>";
 
 /**
+ * Resend's sandbox sender (`onboarding@resend.dev`) may only deliver to the
+ * address the Resend account was registered with. Until a sending domain is
+ * verified, a reminder addressed to a real contact is refused outright, which
+ * would leave the whole workflow silently failing.
+ *
+ * Setting EMAIL_REDIRECT_TO routes every message to that one deliverable
+ * address instead, naming the intended recipient in the subject line and at the
+ * top of the body. The point is to keep the workflow honest rather than to fake
+ * delivery: nobody reading a redirected email should think it reached the
+ * person it names. Leave it unset once a domain is verified.
+ */
+const REDIRECT_TO = process.env.EMAIL_REDIRECT_TO?.trim() ?? "";
+
+type Routed = {
+  to: string;
+  cc?: string;
+  subjectPrefix: string;
+  notice: string;
+};
+
+function route(to: string, cc?: string | null): Routed {
+  // No redirect configured, or it would land in the same inbox anyway.
+  if (!REDIRECT_TO || to.trim().toLowerCase() === REDIRECT_TO.toLowerCase()) {
+    return { to, ...(cc ? { cc } : {}), subjectPrefix: "", notice: "" };
+  }
+  const intended = cc ? `${to} (cc ${cc})` : to;
+  return {
+    to: REDIRECT_TO,
+    // cc is dropped: it would be refused for exactly the same reason.
+    subjectPrefix: `[for ${to}] `,
+    notice: `<div style="margin:0 0 16px;padding:10px 12px;border:1px dashed ${C.line};border-radius:8px;background:${C.page};font-size:13px;color:${C.muted}">
+        <strong style="color:${C.ink}">Redirected.</strong> This would normally be sent to ${intended}. All reminders are routed here while the sending domain is unverified.
+      </div>`,
+  };
+}
+
+/**
  * Ben Foods palette as plain hex — email clients don't understand the oklch
  * custom properties the app uses, so these mirror the tokens in globals.css.
  */
@@ -47,7 +84,13 @@ function masthead() {
   return `<img src="${APP_URL}/benfoods-logo.png" alt="Ben Foods (S) Pte Ltd" width="200" height="46" style="display:block;border:0;height:auto;max-width:200px" />`;
 }
 
-function shell(title: string, accent: string, bodyHtml: string, test = false) {
+function shell(
+  title: string,
+  accent: string,
+  bodyHtml: string,
+  test = false,
+  notice = "",
+) {
   return `
   <div style="font-family:Arial,Helvetica,sans-serif;background:${C.page};padding:24px;color:${C.ink}">
     <div style="max-width:520px;margin:0 auto;background:${C.card};border:1px solid ${C.line};border-radius:12px;overflow:hidden">
@@ -59,7 +102,8 @@ function shell(title: string, accent: string, bodyHtml: string, test = false) {
             ? `<p style="margin:16px 0 0;display:inline-block;background:${C.ink};color:#ffffff;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.04em">TEST EMAIL — no action needed</p>`
             : ""
         }
-        <h1 style="margin:16px 0 12px;font-size:18px;color:${C.ink}">${title}</h1>
+        <div style="margin-top:16px">${notice}</div>
+        <h1 style="margin:0 0 12px;font-size:18px;color:${C.ink}">${title}</h1>
         ${bodyHtml}
         <a href="${APP_URL}/dashboard" style="display:inline-block;margin-top:20px;background:${C.primary};color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-weight:600">Open Cert Checker</a>
         <p style="margin-top:16px;font-size:12px;color:${C.muted}">
@@ -105,10 +149,12 @@ export async function sendUpcomingExpiryEmail(
   const when =
     days > 1 ? `in ${days} days` : days === 1 ? "tomorrow" : "today";
 
+  const routed = route(opts.to || cert.marketing_email);
+
   return client().emails.send({
     from: FROM,
-    to: opts.to || cert.marketing_email,
-    subject: `${opts.test ? "[TEST] " : ""}\u23f0 Expiring ${when}: ${label}`,
+    to: routed.to,
+    subject: `${opts.test ? "[TEST] " : ""}${routed.subjectPrefix}\u23f0 Expiring ${when}: ${label}`,
     html: shell(
       `A certificate expires ${when}`,
       C.brand,
@@ -116,6 +162,7 @@ export async function sendUpcomingExpiryEmail(
        ${details(cert)}
        <p style="margin:0;color:${C.muted}">Please arrange the renewal and upload the new version before it expires. You will be reminded again on the day, and senior management is notified <strong style="color:${C.ink}">${cert.escalation_days} day(s)</strong> after that if it is still outstanding.</p>`,
       opts.test,
+      routed.notice,
     ),
   });
 }
@@ -123,10 +170,12 @@ export async function sendUpcomingExpiryEmail(
 /** Level 1: certificate has reached its expiry date. Notify the marketing contact. */
 export async function sendExpiryEmail(cert: MailableCert, opts: SendOptions = {}) {
   const label = certLabel(cert);
+  const routed = route(opts.to || cert.marketing_email);
+
   return client().emails.send({
     from: FROM,
-    to: opts.to || cert.marketing_email,
-    subject: `${opts.test ? "[TEST] " : ""}⚠️ Expired: ${label}`,
+    to: routed.to,
+    subject: `${opts.test ? "[TEST] " : ""}${routed.subjectPrefix}⚠️ Expired: ${label}`,
     html: shell(
       "A certificate has expired",
       C.orange,
@@ -134,6 +183,7 @@ export async function sendExpiryEmail(cert: MailableCert, opts: SendOptions = {}
        ${details(cert)}
        <p style="margin:0;color:${C.muted}">Please upload the renewed version. If it isn't updated within <strong style="color:${C.ink}">${cert.escalation_days} day(s)</strong>, senior management will be notified.</p>`,
       opts.test,
+      routed.notice,
     ),
   });
 }
@@ -145,11 +195,13 @@ export async function sendEscalationEmail(
 ) {
   const label = certLabel(cert);
   const cc = opts.cc === undefined ? cert.marketing_email : opts.cc;
+  const routed = route(opts.to || cert.management_email, cc);
+
   return client().emails.send({
     from: FROM,
-    to: opts.to || cert.management_email,
-    ...(cc ? { cc } : {}),
-    subject: `${opts.test ? "[TEST] " : ""}🚨 Escalation: ${label} still not renewed`,
+    to: routed.to,
+    ...(routed.cc ? { cc: routed.cc } : {}),
+    subject: `${opts.test ? "[TEST] " : ""}${routed.subjectPrefix}🚨 Escalation: ${label} still not renewed`,
     html: shell(
       "Escalation — overdue certificate",
       C.red,
@@ -157,6 +209,7 @@ export async function sendEscalationEmail(
        ${details(cert)}
        <p style="margin:0;color:${C.muted}">Marketing contact: <strong style="color:${C.ink}">${cert.marketing_email}</strong>. This has been escalated to senior management for action.</p>`,
       opts.test,
+      routed.notice,
     ),
   });
 }
