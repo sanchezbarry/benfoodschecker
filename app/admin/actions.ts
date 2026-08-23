@@ -7,16 +7,21 @@ import { ROLE_LABELS, isBootstrapAdmin, type AppRole } from "@/lib/auth";
 import {
   sendEscalationEmail,
   sendExpiryEmail,
+  sendUpcomingExpiryEmail,
   type MailableCert,
 } from "@/lib/email";
 import { runReminderJob } from "@/lib/reminders";
-import { DEFAULT_ESCALATION_DAYS, DOCUMENTS_BUCKET } from "@/lib/constants";
+import {
+  DEFAULT_ESCALATION_DAYS,
+  DEFAULT_REMINDER_DAYS_BEFORE,
+  DOCUMENTS_BUCKET,
+  MIN_PASSWORD_LENGTH,
+} from "@/lib/constants";
 import type { CertDocument } from "@/lib/types";
 
 export type AdminState = { error?: string; success?: string } | null;
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const MIN_PASSWORD_LENGTH = 8;
 
 /**
  * The role comes off a form, so treat it as untrusted: anything unrecognised
@@ -281,9 +286,12 @@ function sampleCert(): MailableCert {
   return {
     cert_type: "ISO 22000",
     pic_name: "Sample PIC",
-    expiry_date: new Date().toISOString(),
+    // Far enough out that the Level 0 wording ("expires in N days") reads
+    // sensibly; Levels 1 and 2 describe the date rather than the gap.
+    expiry_date: new Date(Date.now() + 14 * 86_400_000).toISOString(),
     marketing_email: "marketing@benfoods.com",
     management_email: "director@benfoods.com",
+    reminder_days_before: DEFAULT_REMINDER_DAYS_BEFORE,
     escalation_days: DEFAULT_ESCALATION_DAYS,
     folder: { code: "FL001", name: "Sample Vendor Pte Ltd" },
   };
@@ -303,6 +311,32 @@ async function resolveSample(
     .single();
 
   return (data as CertDocument | null) ?? sampleCert();
+}
+
+/**
+ * Send a Level 0 advance reminder to an address of the admin's choosing.
+ * Nothing in the database changes — no `reminded_at` is stamped, so the real
+ * workflow is unaffected.
+ */
+export async function sendReminderTest(
+  _prev: AdminState,
+  formData: FormData,
+): Promise<AdminState> {
+  const session = await requireAdmin();
+  if (!session) return { error: "Admins only." };
+
+  const to = String(formData.get("to") ?? "").trim();
+  const certId = String(formData.get("cert_id") ?? "");
+
+  if (!EMAIL_RE.test(to))
+    return { error: "Enter a valid email address to send the test to." };
+
+  const cert = await resolveSample(session.supabase, certId);
+
+  const { error } = await sendUpcomingExpiryEmail(cert, { to, test: true });
+  if (error) return { error: `Resend rejected the email: ${error.message}` };
+
+  return { success: `Advance reminder test sent to ${to}.` };
 }
 
 /**
@@ -380,7 +414,10 @@ export async function runRemindersNow(
   revalidatePath("/admin");
   revalidatePath("/dashboard");
 
-  const summary = `${result.notified} expiry notification${result.notified === 1 ? "" : "s"} and ${result.escalated} escalation${result.escalated === 1 ? "" : "s"} sent.`;
+  const summary =
+    `${result.reminded} advance reminder${result.reminded === 1 ? "" : "s"}, ` +
+    `${result.notified} expiry notification${result.notified === 1 ? "" : "s"} and ` +
+    `${result.escalated} escalation${result.escalated === 1 ? "" : "s"} sent.`;
 
   if (result.errors.length > 0) {
     return { error: `${summary} Errors: ${result.errors.join("; ")}` };

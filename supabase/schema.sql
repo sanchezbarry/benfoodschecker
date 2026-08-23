@@ -97,10 +97,13 @@ create table public.documents (
   file_size        bigint not null,
   expiry_date      timestamptz not null, -- ALWAYS the current version's expiry,
                                          -- stored as 00:00 local on that date
-  marketing_email  text not null,        -- Level 1 contact
+  marketing_email  text not null,        -- Level 0 + Level 1 contact
   management_email text not null,        -- Level 2 (escalation) contact
+  -- Days before expiry for the advance reminder. 0 disables it.
+  reminder_days_before integer not null default 30 check (reminder_days_before >= 0),
   escalation_days  integer not null default 7 check (escalation_days >= 0),
   status           document_status not null default 'active',
+  reminded_at      timestamptz,          -- Level 0 sent (certificate stays 'active')
   notified_at      timestamptz,
   escalated_at     timestamptz,
   created_at       timestamptz not null default now()

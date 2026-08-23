@@ -2,12 +2,13 @@
 
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
-import { AlertTriangle, Loader2, Play, Send, Siren } from "lucide-react";
+import { AlertTriangle, BellRing, Loader2, Play, Send, Siren } from "lucide-react";
 
 import {
   runRemindersNow,
   sendEscalationTest,
   sendExpiryTest,
+  sendReminderTest,
   type AdminState,
 } from "./actions";
 import type { CertDocument } from "@/lib/types";
@@ -89,6 +90,10 @@ export function TestsPanel({
   certificates: CertDocument[];
   defaultEmail: string;
 }) {
+  const [reminderState, reminderAction] = useActionState<AdminState, FormData>(
+    sendReminderTest,
+    null,
+  );
   const [expiryState, expiryAction] = useActionState<AdminState, FormData>(
     sendExpiryTest,
     null,
@@ -107,12 +112,38 @@ export function TestsPanel({
       <CardHeader>
         <CardTitle>Notification tests</CardTitle>
         <CardDescription>
-          Fire either level of the reminder workflow on demand. Test emails are
+          Fire any level of the reminder workflow on demand. Test emails are
           clearly marked as tests and change nothing in the database — no
-          certificate is marked as notified or escalated.
+          certificate is marked as reminded, notified or escalated.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
+        {/* ---- Level 0 ---- */}
+        <form action={reminderAction} className="space-y-4 rounded-lg border p-4">
+          <div className="flex items-center gap-2">
+            <BellRing className="size-4 text-primary" />
+            <h3 className="text-sm font-semibold">
+              Level 0 — advance reminder, before expiry
+            </h3>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="reminder_test_to">Send to</Label>
+              <Input
+                id="reminder_test_to"
+                name="to"
+                type="email"
+                defaultValue={defaultEmail}
+                placeholder="you@benfoods.com"
+                required
+              />
+            </div>
+            <CertPicker id="reminder_test_cert" certificates={certificates} />
+          </div>
+          <Feedback state={reminderState} />
+          <Pending idle={<><BellRing />Send reminder test</>} busy="Sending…" />
+        </form>
+
         {/* ---- Level 1 ---- */}
         <form action={expiryAction} className="space-y-4 rounded-lg border p-4">
           <div className="flex items-center gap-2">

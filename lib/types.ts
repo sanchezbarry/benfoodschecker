@@ -50,8 +50,12 @@ export interface CertDocument {
   expiry_date: string; // ISO timestamptz — 00:00 local on the expiry date
   marketing_email: string;
   management_email: string;
+  /** Days before expiry for the advance reminder. 0 disables it. */
+  reminder_days_before: number;
   escalation_days: number;
   status: DocumentStatus;
+  /** Level 0 sent. The certificate stays `active`, so Level 1 still fires. */
+  reminded_at: string | null;
   notified_at: string | null;
   escalated_at: string | null;
   created_at: string;

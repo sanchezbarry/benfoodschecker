@@ -1,14 +1,17 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import {
   AlertTriangle,
+  BellRing,
   Download,
   FileText,
   Folder as FolderIcon,
   History,
   Loader2,
+  Search,
   Trash2,
+  X,
 } from "lucide-react";
 
 import { deleteDocument, deleteVersion, getSignedUrl } from "./actions";
@@ -16,6 +19,7 @@ import type { CertDocument, DocumentVersion } from "@/lib/types";
 import { daysUntil, formatBytes, formatDate, formatDateTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Card,
   CardContent,
@@ -168,15 +172,23 @@ function CertRow({ doc, canWrite }: { doc: CertDocument; canWrite: boolean }) {
             <ExpiryBadge doc={doc} />
           </div>
           <p className="text-sm text-muted-foreground">
-            PIC {doc.pic_name} · Expires {formatDate(doc.expiry_date)} ·
-            Escalates {doc.escalation_days}d after
+            PIC {doc.pic_name} · Expires {formatDate(doc.expiry_date)} ·{" "}
+            {doc.reminder_days_before > 0
+              ? `Reminder ${doc.reminder_days_before}d before`
+              : "No advance reminder"}{" "}
+            · Escalates {doc.escalation_days}d after
           </p>
           <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <span>📣 {doc.marketing_email}</span>
             <span>🛡️ {doc.management_email}</span>
+            {doc.reminded_at && (
+              <span className="inline-flex items-center gap-1 text-primary">
+                <BellRing className="size-3" /> advance reminder sent
+              </span>
+            )}
             {doc.notified_at && (
               <span className="inline-flex items-center gap-1 text-warning">
-                <AlertTriangle className="size-3" /> reminded
+                <AlertTriangle className="size-3" /> expiry notice sent
               </span>
             )}
           </p>
@@ -223,6 +235,20 @@ export function DocumentsList({
   /** Department accounts are view-only, so their delete controls are dropped. */
   canWrite: boolean;
 }) {
+  const [query, setQuery] = useState("");
+
+  // Vendor code and name only, as asked. Tokenised so "fresh life" matches
+  // "Fresh Life Pte Ltd" and "FL001 fresh" matches too.
+  const matches = useMemo(() => {
+    const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return documents;
+    return documents.filter((doc) => {
+      const haystack =
+        `${doc.folder?.code ?? ""} ${doc.folder?.name ?? ""}`.toLowerCase();
+      return tokens.every((t) => haystack.includes(t));
+    });
+  }, [documents, query]);
+
   if (documents.length === 0) {
     return (
       <Card>
@@ -238,21 +264,49 @@ export function DocumentsList({
     );
   }
 
-  const groups = groupByFolder(documents);
+  const groups = groupByFolder(matches);
+  const filtering = query.trim().length > 0;
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Tracked certificates</CardTitle>
         <CardDescription>
-          {documents.length} certificate{documents.length === 1 ? "" : "s"}{" "}
-          across {groups.length} vendor
-          {groups.length === 1 ? "" : "s"}
-          {viewAll ? " — showing every user's." : "."}
+          {filtering
+            ? `${matches.length} of ${documents.length} certificate${documents.length === 1 ? "" : "s"} match.`
+            : `${documents.length} certificate${documents.length === 1 ? "" : "s"} across ${groups.length} vendor${groups.length === 1 ? "" : "s"}${viewAll ? " — showing every user's." : "."}`}
           {!canWrite && " Downloads only; nothing here can be changed."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search by vendor code or name…"
+            aria-label="Search certificates by vendor code or name"
+            className="pl-9 pr-9"
+          />
+          {filtering && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground"
+            >
+              <X className="size-4" />
+            </button>
+          )}
+        </div>
+
+        {groups.length === 0 && (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            No vendor matches &ldquo;{query.trim()}&rdquo;.
+          </p>
+        )}
+
         {groups.map((group) => (
           <section key={group.code} className="space-y-3">
             <h3 className="flex items-center gap-2 text-sm font-semibold">

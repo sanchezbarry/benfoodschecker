@@ -23,6 +23,7 @@ import { COMPRESSION_HINT } from "@/lib/compress";
 import {
   ACCEPTED_FILE_EXTENSIONS,
   DEFAULT_ESCALATION_DAYS,
+  DEFAULT_REMINDER_DAYS_BEFORE,
   MAX_UPLOAD_INPUT_SIZE,
   MAX_UPLOAD_INPUT_SIZE_LABEL,
 } from "@/lib/constants";
@@ -221,7 +222,26 @@ export function UploadForm({
               />
             </div>
 
-            <div className="space-y-2 sm:col-span-2 sm:max-w-[220px]">
+            <div className="space-y-2">
+              <Label htmlFor="reminder_days_before">
+                Remind me (days before expiry)
+              </Label>
+              <Input
+                id="reminder_days_before"
+                name="reminder_days_before"
+                type="number"
+                min={0}
+                defaultValue={DEFAULT_REMINDER_DAYS_BEFORE}
+                aria-describedby="reminder-hint"
+                required
+              />
+              <p id="reminder-hint" className="text-xs text-muted-foreground">
+                Heads-up to the marketing contact while it&apos;s still valid.
+                Set 0 to skip it.
+              </p>
+            </div>
+
+            <div className="space-y-2">
               <Label htmlFor="escalation_days">
                 Escalate after (days past expiry)
               </Label>
@@ -231,8 +251,12 @@ export function UploadForm({
                 type="number"
                 min={0}
                 defaultValue={DEFAULT_ESCALATION_DAYS}
+                aria-describedby="escalation-hint"
                 required
               />
+              <p id="escalation-hint" className="text-xs text-muted-foreground">
+                How long after expiry senior management is told.
+              </p>
             </div>
           </div>
 

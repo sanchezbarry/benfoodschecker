@@ -17,6 +17,7 @@ import { BrandLogo } from "@/components/brand-logo";
 import { UploadForm } from "./upload-form";
 import { NewVersionForm } from "./new-version-form";
 import { DocumentsList } from "./documents-list";
+import { ChangePasswordForm } from "./change-password-form";
 import { LogoutButton } from "./logout-button";
 
 export default async function DashboardPage() {
@@ -92,6 +93,7 @@ export default async function DashboardPage() {
           viewAll={viewAll}
           canWrite={write}
         />
+        <ChangePasswordForm />
       </main>
     </div>
   );

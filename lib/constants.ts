@@ -38,3 +38,18 @@ export const ACCEPTED_FILE_EXTENSIONS = ".pdf,.png,.jpg,.jpeg,.webp";
 
 /** Default days after expiry before escalating to senior management. */
 export const DEFAULT_ESCALATION_DAYS = 7;
+
+/** Shortest password accepted, both in the admin console and by self-service. */
+export const MIN_PASSWORD_LENGTH = 8;
+
+/** Default days before expiry for the advance reminder. 0 disables it. */
+export const DEFAULT_REMINDER_DAYS_BEFORE = 30;
+
+/**
+ * Public URL of the deployed app, used for the button in every reminder email.
+ * Falls back to the production deployment so the link is never missing when
+ * NEXT_PUBLIC_APP_URL hasn't been set in the environment.
+ */
+export const APP_URL = (
+  process.env.NEXT_PUBLIC_APP_URL || "https://benfoodschecker.vercel.app"
+).replace(/\/+$/, "");

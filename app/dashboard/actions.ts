@@ -7,6 +7,7 @@ import type { DocumentVersion } from "@/lib/types";
 import {
   ACCEPTED_MIME_TYPES,
   DEFAULT_ESCALATION_DAYS,
+  DEFAULT_REMINDER_DAYS_BEFORE,
   DOCUMENTS_BUCKET,
   MAX_FILE_SIZE,
   MAX_FILE_SIZE_LABEL,
@@ -177,6 +178,9 @@ export async function createDocument(
   const escalationDays = Number(
     formData.get("escalation_days") ?? DEFAULT_ESCALATION_DAYS,
   );
+  const reminderDaysBefore = Number(
+    formData.get("reminder_days_before") ?? DEFAULT_REMINDER_DAYS_BEFORE,
+  );
 
   // ---- Validation ----
   if (!filePath) return { error: "Please attach a certificate file." };
@@ -191,6 +195,8 @@ export async function createDocument(
     return fail("Enter a valid senior management email.");
   if (!Number.isFinite(escalationDays) || escalationDays < 0)
     return fail("Escalation days must be a positive number.");
+  if (!Number.isFinite(reminderDaysBefore) || reminderDaysBefore < 0)
+    return fail("Advance reminder days must be 0 or more.");
 
   const upload = await claimUpload(supabase, user.id, filePath);
   if (!upload.ok) return fail(upload.error);
@@ -246,6 +252,7 @@ export async function createDocument(
       expiry_date: expiryDate.toISOString(),
       marketing_email: marketingEmail,
       management_email: managementEmail,
+      reminder_days_before: Math.round(reminderDaysBefore),
       escalation_days: Math.round(escalationDays),
     })
     .select("id")
@@ -287,8 +294,9 @@ export async function createDocument(
  *
  * The new version becomes the current one and its expiry is mirrored onto the
  * `documents` row, so the reminder job tracks it and nothing else: a retained
- * older version keeps its own recorded expiry for reference only. Reminder
- * state resets to `active` so the two-level workflow fires again on the new date.
+ * older version keeps its own recorded expiry for reference only. All three
+ * reminder levels reset, so the advance reminder fires again against the new
+ * date rather than being suppressed by the previous cycle.
  *
  * `old_versions` = "retain" keeps the previous files as history; "delete"
  * removes them (rows and stored files) once the new version is safely in place.
@@ -381,6 +389,7 @@ export async function uploadNewVersion(
       file_size: upload.size,
       expiry_date: expiryDate.toISOString(),
       status: "active",
+      reminded_at: null,
       notified_at: null,
       escalated_at: null,
     })

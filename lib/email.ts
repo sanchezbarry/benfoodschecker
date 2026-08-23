@@ -1,9 +1,9 @@
 import { Resend } from "resend";
 import type { CertDocument } from "@/lib/types";
-import { certLabel, formatDate } from "@/lib/utils";
+import { certLabel, daysUntil, formatDate } from "@/lib/utils";
+import { APP_URL } from "@/lib/constants";
 
 const FROM = process.env.EMAIL_FROM ?? "Cert Checker <onboarding@resend.dev>";
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "";
 
 /**
  * Ben Foods palette as plain hex — email clients don't understand the oklch
@@ -35,21 +35,16 @@ export type MailableCert = Pick<
   | "expiry_date"
   | "marketing_email"
   | "management_email"
+  | "reminder_days_before"
   | "escalation_days"
 > & { folder?: { code: string; name: string } | null };
 
 /** Options shared by both levels. `to` overrides the stored recipient (admin tests). */
 type SendOptions = { to?: string; test?: boolean };
 
-/**
- * The logo is served from this app's own /public, so it needs an absolute URL.
- * Without NEXT_PUBLIC_APP_URL set there is nothing to link to, so fall back to
- * a text wordmark rather than a broken image.
- */
+/** The logo is served from this app's own /public, so it needs an absolute URL. */
 function masthead() {
-  return APP_URL
-    ? `<img src="${APP_URL}/benfoods-logo.png" alt="Ben Foods (S) Pte Ltd" width="200" height="46" style="display:block;border:0;height:auto;max-width:200px" />`
-    : `<p style="margin:0;font-size:16px;font-weight:700;color:${C.primary};letter-spacing:.02em">BEN FOODS (S) PTE LTD</p>`;
+  return `<img src="${APP_URL}/benfoods-logo.png" alt="Ben Foods (S) Pte Ltd" width="200" height="46" style="display:block;border:0;height:auto;max-width:200px" />`;
 }
 
 function shell(title: string, accent: string, bodyHtml: string, test = false) {
@@ -66,12 +61,11 @@ function shell(title: string, accent: string, bodyHtml: string, test = false) {
         }
         <h1 style="margin:16px 0 12px;font-size:18px;color:${C.ink}">${title}</h1>
         ${bodyHtml}
-        ${
-          APP_URL
-            ? `<a href="${APP_URL}/dashboard" style="display:inline-block;margin-top:20px;background:${C.primary};color:#ffffff;text-decoration:none;padding:11px 18px;border-radius:8px;font-weight:600">Open Cert Checker</a>`
-            : ""
-        }
-        <p style="margin-top:24px;font-size:12px;color:${C.muted}">Ben Foods · Cert Checker — automated reminder.</p>
+        <a href="${APP_URL}/dashboard" style="display:inline-block;margin-top:20px;background:${C.primary};color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-weight:600">Open Cert Checker</a>
+        <p style="margin-top:16px;font-size:12px;color:${C.muted}">
+          Or paste this into your browser: <a href="${APP_URL}" style="color:${C.primary}">${APP_URL}</a>
+        </p>
+        <p style="margin-top:16px;font-size:12px;color:${C.muted}">Ben Foods · Cert Checker — automated reminder.</p>
       </div>
     </div>
   </div>`;
@@ -94,6 +88,36 @@ function details(cert: MailableCert) {
         `<tr><td style="padding:4px 16px 4px 0;color:${C.muted}">${label}</td><td style="padding:4px 0;color:${C.ink};font-weight:600">${value}</td></tr>`,
     )
     .join("")}</table>`;
+}
+
+/**
+ * Level 0: the certificate is approaching its expiry date. Sent
+ * `reminder_days_before` days ahead so there is time to arrange a renewal —
+ * this is the only one of the three that arrives while the certificate is
+ * still valid.
+ */
+export async function sendUpcomingExpiryEmail(
+  cert: MailableCert,
+  opts: SendOptions = {},
+) {
+  const label = certLabel(cert);
+  const days = daysUntil(cert.expiry_date);
+  const when =
+    days > 1 ? `in ${days} days` : days === 1 ? "tomorrow" : "today";
+
+  return client().emails.send({
+    from: FROM,
+    to: opts.to || cert.marketing_email,
+    subject: `${opts.test ? "[TEST] " : ""}\u23f0 Expiring ${when}: ${label}`,
+    html: shell(
+      `A certificate expires ${when}`,
+      C.brand,
+      `<p style="margin:0;color:${C.muted}">This certificate is still valid, but it is due for renewal.</p>
+       ${details(cert)}
+       <p style="margin:0;color:${C.muted}">Please arrange the renewal and upload the new version before it expires. You will be reminded again on the day, and senior management is notified <strong style="color:${C.ink}">${cert.escalation_days} day(s)</strong> after that if it is still outstanding.</p>`,
+      opts.test,
+    ),
+  });
 }
 
 /** Level 1: certificate has reached its expiry date. Notify the marketing contact. */

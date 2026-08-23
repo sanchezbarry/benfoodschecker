@@ -14,7 +14,9 @@ escalating email reminders**.
   PDF/PNG/JPG/WEBP and capped at **25 MB** once stored
 - **Compression** — photos and large scanned PDFs are re-rendered in the browser
   before upload, typically shedding 70–90% of the bytes
-- **Two-level reminders**
+- **Three-level reminders**
+  0. **N days before expiry**, while the certificate is still valid → email the
+     **marketing contact**
   1. **On expiry** → email the **marketing contact**
   2. **N days later**, if the certificate still hasn't been renewed → escalate to
      **senior management**
@@ -242,6 +244,17 @@ Vercel's 4.5 MB limit is not a factor and the bucket limit is the only ceiling �
 keep `MAX_FILE_SIZE` in sync with `storage.buckets.file_size_limit`
 (see [`supabase/migrations/003_raise_bucket_size_limit.sql`](supabase/migrations/003_raise_bucket_size_limit.sql)).
 
+### Finding and managing things (`/dashboard`)
+
+The certificate list is grouped by vendor folder with a **search box** that
+filters on vendor code or name. The query is tokenised, so "fresh life" matches
+"Fresh Life Pte Ltd" and "FL001 fresh" matches too.
+
+Everyone, including view-only department accounts, can **change their own
+password** from the bottom of the dashboard. The current password is required —
+Supabase would otherwise let a live session set a new one without it, which
+would let anyone who found a signed-in browser lock the real owner out.
+
 ### Filing a certificate (`/dashboard`)
 
 | Field | Notes |
@@ -251,6 +264,7 @@ keep `MAX_FILE_SIZE` in sync with `storage.buckets.file_size_limit`
 | PIC | read-only, taken from your account's name |
 | Certificate type | free text with a dropdown of types already in use (`SUPPLIER FORM`, `ISO 22000`, …) |
 | Expiry date | whole days — stored as 00:00 local on the chosen date; the reminder job watches this |
+| Remind me (days before expiry) | Level 0 heads-up while the certificate is still valid; 0 disables it |
 | File, contacts, escalation window | PDF/image, the two email recipients, and the grace period |
 
 Typing a code that already exists files the certificate into that folder and
@@ -276,11 +290,11 @@ the certificate and reminder state resets to `active`.
   can't delete yourself or either permanent admin.
 - **Vendor / customer folders** — create, rename, delete. A folder that still
   holds certificates can't be deleted; refile or delete them first.
-- **Notification tests** — send a Level 1 or Level 2 email to any address you
-  type in (escalation takes a "to" and an optional "cc"). Test emails are badged
-  as tests and change nothing in the database. A separate **Run reminder job**
-  button runs the real daily job early — that one does email real contacts and
-  advance statuses.
+- **Notification tests** — send a Level 0, Level 1 or Level 2 email to any
+  address you type in (escalation takes a "to" and an optional "cc"). Test emails
+  are badged as tests and change nothing in the database. A separate **Run
+  reminder job** button runs the real daily job early — that one does email real
+  contacts and advance statuses.
 
 ---
 
@@ -312,15 +326,24 @@ Uncomment and edit the final block in [`supabase/schema.sql`](supabase/schema.sq
 
 ---
 
-## How the two levels work
+## How the three levels work
 
-| Trigger condition | Action | New status |
-| --- | --- | --- |
-| `expiry_date <= now` and status `active` | email **marketing contact** | `notified` |
-| `now >= expiry_date + escalation_days` and status `notified` | email **senior management** (cc marketing) | `escalated` |
+| # | Trigger condition | Action | State change |
+| --- | --- | --- | --- |
+| 0 | `now >= expiry_date - reminder_days_before`, still valid, `reminded_at` null | email **marketing contact** | stamps `reminded_at` |
+| 1 | `expiry_date <= now` and status `active` | email **marketing contact** | status → `notified` |
+| 2 | `now >= expiry_date + escalation_days` and status `notified` | email **senior management** (cc marketing) | status → `escalated` |
+
+Level 0 deliberately does **not** advance `status`. The status enum drives the
+expire/escalate handover, and the advance reminder is orthogonal to it — a
+certificate stays `active` after being reminded so Level 1 still fires on the
+day. A nullable `reminded_at` keeps the job idempotent without disturbing that.
+Setting `reminder_days_before` to 0 disables Level 0 for that certificate; the
+other two still fire.
 
 `expiry_date` is always the current version's, so retaining old versions never
-triggers stale reminders.
+triggers stale reminders. Uploading a new version clears all three markers, so
+the advance reminder fires again against the new date.
 
 ## Security notes
 
