@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 
 import { getSession } from "@/lib/session";
+import { activeTransport } from "@/lib/email";
 import { Button } from "@/components/ui/button";
 import { BrandLogo } from "@/components/brand-logo";
 import { listCertificates, listFolders, listUsers } from "./data";
@@ -59,6 +60,7 @@ export default async function AdminPage() {
         <TestsPanel
           certificates={certificates}
           defaultEmail={user.email ?? ""}
+          transport={activeTransport()}
         />
       </main>
     </div>

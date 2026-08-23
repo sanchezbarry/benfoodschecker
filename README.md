@@ -22,7 +22,7 @@ escalating email reminders**.
      **senior management**
 - **Admin console** — manage users, passwords, and folders; fire either reminder
   level on demand
-- **Email** — [Resend](https://resend.com)
+- **Email** — [Resend](https://resend.com), or any SMTP mailbox
 - **Scheduling** — a secret-protected cron endpoint, driven by **Vercel Cron** or
   **Supabase `pg_cron`**
 
@@ -154,11 +154,46 @@ themselves — that would lock them out on the next page load.
 4. Grab your keys from **Project Settings → API**: the project URL, the `anon`
    public key, and the `service_role` secret key.
 
-### 2. Resend
+### 2. Email
 
-1. Sign up at [resend.com](https://resend.com) and create an **API key**.
-2. Verify a sending domain, or use the sandbox sender `onboarding@resend.dev` for
-   testing (it can only send to your own verified address).
+Two transports. **SMTP wins whenever `SMTP_HOST` is set**; otherwise Resend is
+used. `/admin` shows which one is live, so a failed send is easy to place.
+
+Whichever you pick, the constraint is the same: no provider will send to
+arbitrary recipients until you have proved you control the sending identity.
+That is anti-spam, not a quirk — but proving it does not have to mean DNS.
+
+**Resend (default).** Sign up at [resend.com](https://resend.com) and create an
+API key. The shared sender `onboarding@resend.dev` works immediately but
+**delivers only to the address the Resend account was registered with** — fine
+for testing, useless for reminding a real contact. Verifying a domain lifts that
+and gives the best deliverability, but needs DNS access.
+
+**SMTP.** Any mailbox that speaks SMTP will send to anyone once authenticated,
+with no DNS changes:
+
+| Provider | Host | Port | Notes |
+| --- | --- | --- | --- |
+| Google Workspace / Gmail | `smtp.gmail.com` | 587 | needs 2-Step Verification, then an App Password; some admins disable these |
+| Microsoft 365 | `smtp.office365.com` | 587 | |
+| Brevo | `smtp-relay.brevo.com` | 587 | verify one sender address, no DNS |
+| SendGrid | `smtp.sendgrid.net` | 587 | username is the literal `apikey` |
+
+Set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, and point `EMAIL_FROM`
+at an address the mailbox may send as.
+
+### Routing everything to one inbox
+
+`EMAIL_REDIRECT_TO` sends every reminder to a single address instead of each
+certificate's real contacts, naming the intended recipient in the subject and in
+a banner at the top of the body. Useful for a demo, or while contacts are still
+placeholders.
+
+It is **not** a way round the sending restriction: the redirect only changes who
+the message is addressed to, and the transport still has to be allowed to reach
+that address. On Resend's shared sender the only value that works is the Resend
+account's own address; any other makes every send fail. With SMTP configured,
+any address works.
 
 ### 3. Environment variables
 
@@ -168,8 +203,11 @@ cp .env.local.example .env.local
 
 Fill in every value (see the comments in the file):
 `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
-`SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`, `EMAIL_FROM`, `CRON_SECRET` (any
-long random string), `NEXT_PUBLIC_APP_URL`.
+`SUPABASE_SERVICE_ROLE_KEY`, `EMAIL_FROM`, `CRON_SECRET` (any long random
+string), `NEXT_PUBLIC_APP_URL`, and either `RESEND_API_KEY` or the `SMTP_*`
+group. `NEXT_PUBLIC_APP_URL` must be absolute and publicly reachable — email
+clients cannot resolve `localhost`, so a local value there means a broken logo
+and a dead button in anything you send from your machine.
 
 ### 4. Run
 

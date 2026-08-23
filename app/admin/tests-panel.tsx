@@ -86,9 +86,12 @@ function CertPicker({
 export function TestsPanel({
   certificates,
   defaultEmail,
+  transport,
 }: {
   certificates: CertDocument[];
   defaultEmail: string;
+  /** Which mail transport is live, so a failed send is easy to diagnose. */
+  transport: string;
 }) {
   const [reminderState, reminderAction] = useActionState<AdminState, FormData>(
     sendReminderTest,
@@ -115,6 +118,9 @@ export function TestsPanel({
           Fire any level of the reminder workflow on demand. Test emails are
           clearly marked as tests and change nothing in the database — no
           certificate is marked as reminded, notified or escalated.
+          <span className="mt-2 block text-xs">
+            Sending via <strong>{transport}</strong>.
+          </span>
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">

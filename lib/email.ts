@@ -58,10 +58,80 @@ const C = {
   card: "#ffffff",
 };
 
-// Instantiate lazily so importing this module during `next build` (which has
-// no runtime env) doesn't throw on a missing API key.
-function client() {
-  return new Resend(process.env.RESEND_API_KEY);
+/**
+ * Delivery result, normalised so callers don't care which transport ran.
+ * Mirrors the shape Resend already returned, so nothing downstream changed.
+ */
+export type SendResult = {
+  data: { id: string } | null;
+  error: { name: string; message: string } | null;
+};
+
+/**
+ * Two transports, chosen by environment.
+ *
+ * SMTP wins when SMTP_HOST is set. It exists because Resend's shared sender
+ * (`onboarding@resend.dev`) can only deliver to the address the Resend account
+ * was registered with — fine for testing, useless for reminding a real vendor
+ * contact — and verifying a domain needs DNS access that isn't always
+ * available. Any mailbox that speaks SMTP gets round that: a Google Workspace
+ * or Microsoft 365 account with an app password, or Brevo/SendGrid, all of
+ * which will send to arbitrary recipients once you've authenticated as
+ * somebody entitled to send.
+ *
+ * Both are instantiated lazily so importing this module during `next build`,
+ * which has no runtime env, doesn't throw on missing credentials.
+ */
+function smtpConfigured() {
+  return Boolean(process.env.SMTP_HOST);
+}
+
+async function deliver(message: {
+  to: string;
+  cc?: string;
+  subject: string;
+  html: string;
+}): Promise<SendResult> {
+  if (smtpConfigured()) {
+    try {
+      const nodemailer = await import("nodemailer");
+      const port = Number(process.env.SMTP_PORT ?? 587);
+      const transport = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port,
+        // 465 is implicit TLS; 587 upgrades with STARTTLS.
+        secure: process.env.SMTP_SECURE
+          ? process.env.SMTP_SECURE === "true"
+          : port === 465,
+        auth: process.env.SMTP_USER
+          ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+          : undefined,
+      });
+      const info = await transport.sendMail({ from: FROM, ...message });
+      return { data: { id: info.messageId }, error: null };
+    } catch (e) {
+      const err = e as Error;
+      return { data: null, error: { name: err.name, message: err.message } };
+    }
+  }
+
+  const result = await new Resend(process.env.RESEND_API_KEY).emails.send({
+    from: FROM,
+    ...message,
+  });
+  return {
+    data: result.data ? { id: result.data.id } : null,
+    error: result.error
+      ? { name: result.error.name, message: result.error.message }
+      : null,
+  };
+}
+
+/** Which transport is live, for diagnostics and the admin console. */
+export function activeTransport() {
+  return smtpConfigured()
+    ? `SMTP (${process.env.SMTP_HOST})`
+    : "Resend API";
 }
 
 /** A certificate as the emails need it — real rows and admin test samples both fit. */
@@ -151,8 +221,7 @@ export async function sendUpcomingExpiryEmail(
 
   const routed = route(opts.to || cert.marketing_email);
 
-  return client().emails.send({
-    from: FROM,
+  return deliver({
     to: routed.to,
     subject: `${opts.test ? "[TEST] " : ""}${routed.subjectPrefix}\u23f0 Expiring ${when}: ${label}`,
     html: shell(
@@ -172,8 +241,7 @@ export async function sendExpiryEmail(cert: MailableCert, opts: SendOptions = {}
   const label = certLabel(cert);
   const routed = route(opts.to || cert.marketing_email);
 
-  return client().emails.send({
-    from: FROM,
+  return deliver({
     to: routed.to,
     subject: `${opts.test ? "[TEST] " : ""}${routed.subjectPrefix}⚠️ Expired: ${label}`,
     html: shell(
@@ -197,10 +265,9 @@ export async function sendEscalationEmail(
   const cc = opts.cc === undefined ? cert.marketing_email : opts.cc;
   const routed = route(opts.to || cert.management_email, cc);
 
-  return client().emails.send({
-    from: FROM,
-    to: routed.to,
+  return deliver({
     ...(routed.cc ? { cc: routed.cc } : {}),
+    to: routed.to,
     subject: `${opts.test ? "[TEST] " : ""}${routed.subjectPrefix}🚨 Escalation: ${label} still not renewed`,
     html: shell(
       "Escalation — overdue certificate",

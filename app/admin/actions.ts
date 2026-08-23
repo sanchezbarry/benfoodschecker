@@ -334,7 +334,7 @@ export async function sendReminderTest(
   const cert = await resolveSample(session.supabase, certId);
 
   const { error } = await sendUpcomingExpiryEmail(cert, { to, test: true });
-  if (error) return { error: `Resend rejected the email: ${error.message}` };
+  if (error) return { error: `The mail server rejected it: ${error.message}` };
 
   return { success: `Advance reminder test sent to ${to}.` };
 }
@@ -360,7 +360,7 @@ export async function sendExpiryTest(
   const cert = await resolveSample(session.supabase, certId);
 
   const { error } = await sendExpiryEmail(cert, { to, test: true });
-  if (error) return { error: `Resend rejected the email: ${error.message}` };
+  if (error) return { error: `The mail server rejected it: ${error.message}` };
 
   return { success: `Expiry notification test sent to ${to}.` };
 }
@@ -392,7 +392,7 @@ export async function sendEscalationTest(
     cc: cc || null,
     test: true,
   });
-  if (error) return { error: `Resend rejected the email: ${error.message}` };
+  if (error) return { error: `The mail server rejected it: ${error.message}` };
 
   return {
     success: `Escalation test sent to ${to}${cc ? `, cc ${cc}` : ""}.`,
