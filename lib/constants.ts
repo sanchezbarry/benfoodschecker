@@ -39,6 +39,17 @@ export const ACCEPTED_FILE_EXTENSIONS = ".pdf,.png,.jpg,.jpeg,.webp";
 /** Default days after expiry before escalating to senior management. */
 export const DEFAULT_ESCALATION_DAYS = 7;
 
+/**
+ * The company timezone. Every certificate date is entered, stored and displayed
+ * against this one zone, so a date never changes depending on who is looking or
+ * where the code runs.
+ *
+ * Singapore observes no daylight saving, so the offset is a constant +08:00 and
+ * the two values below can never drift apart.
+ */
+export const APP_TIME_ZONE = "Asia/Singapore";
+export const APP_UTC_OFFSET = "+08:00";
+
 /** Shortest password accepted, both in the admin console and by self-service. */
 export const MIN_PASSWORD_LENGTH = 8;
 

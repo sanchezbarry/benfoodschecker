@@ -29,6 +29,24 @@ escalating email reminders**.
 Built with Next.js 16 (App Router), React 19, Tailwind v4, and hand-authored
 shadcn/ui components.
 
+### Dates and time
+
+Every certificate date is entered, stored and displayed against **Asia/Singapore**
+(`APP_TIME_ZONE` / `APP_UTC_OFFSET` in [`lib/constants.ts`](lib/constants.ts)).
+Singapore observes no daylight saving, so the offset is a constant `+08:00` and
+the two values cannot drift apart.
+
+This matters because an expiry is a *calendar date*, not a moment in time, so it
+has to read the same wherever it is rendered. Storing the visitor's midnight did
+not achieve that: picked in Singapore, "23 Aug" was stored as `2026-08-22T16:00Z`,
+which the browser printed as 23 Aug and the Vercel server — rendering the very
+same certificate's reminder email — printed as 22 Aug.
+
+So `DateInput` pins the picked date to `+08:00`, and `formatDate`,
+`formatDateTime` and `daysUntil` all read back in `APP_TIME_ZONE` rather than the
+ambient zone. `formatDate` and `daysUntil` have to agree on the calendar or a row
+can read "Expires Aug 23 · Expired 1d ago" around midnight.
+
 ### Theme
 
 Light theme, styled to the Ben Foods identity. The palette in
@@ -301,7 +319,7 @@ would let anyone who found a signed-in browser lock the real owner out.
 | Vendor / customer name | free text with a dropdown; picking either code or name fills in the other |
 | PIC | read-only, taken from your account's name |
 | Certificate type | free text with a dropdown of types already in use (`SUPPLIER FORM`, `ISO 22000`, …) |
-| Expiry date | whole days — stored as 00:00 local on the chosen date; the reminder job watches this |
+| Expiry date | whole days — stored as 00:00 Singapore time; the reminder job watches this |
 | Remind me (days before expiry) | Level 0 heads-up while the certificate is still valid; 0 disables it |
 | File, contacts, escalation window | PDF/image, the two email recipients, and the grace period |
 
@@ -351,7 +369,8 @@ curl -H "Authorization: Bearer $CRON_SECRET" \
 ```
 
 **Option A — Vercel Cron (recommended if deploying to Vercel).**
-[`vercel.json`](vercel.json) already schedules it daily at 08:00 UTC. Add
+[`vercel.json`](vercel.json) already schedules it daily at 01:00 UTC, which is
+09:00 in Singapore — reminders land at the start of the working day. Add
 `CRON_SECRET` in your Vercel project's env vars — Vercel automatically sends it
 as the Bearer token.
 

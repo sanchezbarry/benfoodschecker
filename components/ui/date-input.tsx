@@ -2,19 +2,22 @@
 
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
+import { APP_UTC_OFFSET } from "@/lib/constants";
 
 /**
- * A date picker that submits a real ISO timestamp pinned to 00:00 on the
- * chosen day, in the visitor's timezone.
+ * A date picker that submits the chosen calendar date as midnight **Singapore
+ * time**.
  *
- * Two conversions have to happen in the browser, not on the server:
+ * An expiry is a calendar date, not a moment, so it has to read the same to
+ * everybody. Using the visitor's midnight does not achieve that: picked in
+ * Singapore, "23 Aug" is stored as 2026-08-22T16:00Z, which a browser in
+ * Singapore prints as 23 Aug and a server in UTC prints as 22 Aug — the same
+ * row showing two different dates on the dashboard and in the reminder email.
  *
- *   - `new Date("2026-08-19")` is parsed as UTC midnight, which in Singapore
- *     is 08:00 on the 19th and in New York is 20:00 on the *18th*. Appending
- *     the time (`"2026-08-19T00:00:00"`) makes it parse as LOCAL midnight,
- *     which is what "expires on the 19th" means to the person typing it.
- *   - Doing it here rather than in the Server Action means the conversion uses
- *     the visitor's timezone rather than the server's.
+ * Pinning to APP_UTC_OFFSET removes the ambient timezone from the round trip:
+ * the date is stored against one fixed zone and `formatDate` reads it back in
+ * that same zone, so every viewer and the server agree — including anyone
+ * filing a certificate while travelling.
  */
 export function DateInput({
   id,
@@ -29,7 +32,9 @@ export function DateInput({
 
   function onChange(e: React.ChangeEvent<HTMLInputElement>) {
     const raw = e.target.value; // "YYYY-MM-DD", or "" when cleared
-    setIso(raw ? new Date(`${raw}T00:00:00`).toISOString() : "");
+    // The explicit offset is what makes this Singapore midnight rather
+    // than the visitor's midnight.
+    setIso(raw ? new Date(`${raw}T00:00:00${APP_UTC_OFFSET}`).toISOString() : "");
   }
 
   return (

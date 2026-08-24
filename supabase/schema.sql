@@ -96,7 +96,7 @@ create table public.documents (
   file_type        text not null,
   file_size        bigint not null,
   expiry_date      timestamptz not null, -- ALWAYS the current version's expiry,
-                                         -- stored as 00:00 local on that date
+                                         -- stored as 00:00 Asia/Singapore
   marketing_email  text not null,        -- Level 0 + Level 1 contact
   management_email text not null,        -- Level 2 (escalation) contact
   -- Days before expiry for the advance reminder. 0 disables it.
@@ -305,7 +305,7 @@ create policy "documents bucket - own or admin: delete"
 --
 -- select cron.schedule(
 --   'daily-cert-check',
---   '0 8 * * *',
+--   '0 1 * * *',
 --   $$
 --   select net.http_post(
 --     url     := 'https://YOUR-APP-DOMAIN/api/cron/check-expiries',
