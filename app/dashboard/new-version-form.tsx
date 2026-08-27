@@ -57,9 +57,25 @@ export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
   );
   const formRef = useRef<HTMLFormElement>(null);
 
+  // The reminder settings belong to the certificate rather than to any one
+  // version, so picking a certificate fills them in with what it uses today —
+  // submit them unchanged to keep that schedule, or edit them to retune it.
+  // Written through refs rather than state so `form.reset()` still clears them.
+  const reminderRef = useRef<HTMLInputElement>(null);
+  const escalationRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     if (state?.success) formRef.current?.reset();
   }, [state]);
+
+  function onCertificateChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const doc = documents.find((d) => d.id === e.target.value);
+    if (!doc) return;
+    if (reminderRef.current)
+      reminderRef.current.value = String(doc.reminder_days_before);
+    if (escalationRef.current)
+      escalationRef.current.value = String(doc.escalation_days);
+  }
 
   function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -81,8 +97,9 @@ export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
           Renew a certificate by uploading its latest file. The new version
           becomes the tracked one — <strong>only its expiry date is
           monitored</strong>, even if you keep the older versions on file.
-          Reminders reset so they fire again against the new date.{" "}
-          {COMPRESSION_HINT}
+          Reminders reset so they fire again against the new date, and the
+          reminder schedule below — prefilled from the certificate — can be
+          adjusted at the same time. {COMPRESSION_HINT}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -90,7 +107,13 @@ export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2 sm:col-span-2">
               <Label htmlFor="version_id">Certificate</Label>
-              <Select id="version_id" name="id" required defaultValue="">
+              <Select
+                id="version_id"
+                name="id"
+                required
+                defaultValue=""
+                onChange={onCertificateChange}
+              >
                 <option value="" disabled>
                   Select a certificate…
                 </option>
@@ -122,6 +145,49 @@ export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
                 name="expiry_date"
                 required
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="version_reminder_days_before">
+                Remind me (days before expiry)
+              </Label>
+              <Input
+                id="version_reminder_days_before"
+                name="reminder_days_before"
+                type="number"
+                min={0}
+                ref={reminderRef}
+                aria-describedby="version-reminder-hint"
+                required
+              />
+              <p
+                id="version-reminder-hint"
+                className="text-xs text-muted-foreground"
+              >
+                Heads-up to the marketing contact while it&apos;s still valid.
+                Set 0 to skip it.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="version_escalation_days">
+                Escalate after (days past expiry)
+              </Label>
+              <Input
+                id="version_escalation_days"
+                name="escalation_days"
+                type="number"
+                min={0}
+                ref={escalationRef}
+                aria-describedby="version-escalation-hint"
+                required
+              />
+              <p
+                id="version-escalation-hint"
+                className="text-xs text-muted-foreground"
+              >
+                How long after expiry senior management is told.
+              </p>
             </div>
 
             <fieldset className="space-y-2 sm:col-span-2">

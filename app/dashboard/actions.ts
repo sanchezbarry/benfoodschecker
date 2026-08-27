@@ -298,6 +298,10 @@ export async function createDocument(
  * reminder levels reset, so the advance reminder fires again against the new
  * date rather than being suppressed by the previous cycle.
  *
+ * The reminder schedule can be retuned as part of the renewal — a certificate
+ * that now needs more lead time gets it here. Both fields are optional on the
+ * wire: omitted, the certificate keeps the schedule it already had.
+ *
  * `old_versions` = "retain" keeps the previous files as history; "delete"
  * removes them (rows and stored files) once the new version is safely in place.
  */
@@ -320,10 +324,26 @@ export async function uploadNewVersion(
   const expiryDate = expiryRaw ? new Date(expiryRaw) : null;
   const deleteOld = String(formData.get("old_versions") ?? "retain") === "delete";
 
+  // `null` here means "leave it alone", which is what an omitted field gets.
+  const reminderRaw = String(formData.get("reminder_days_before") ?? "").trim();
+  const escalationRaw = String(formData.get("escalation_days") ?? "").trim();
+  const reminderDaysBefore = reminderRaw === "" ? null : Number(reminderRaw);
+  const escalationDays = escalationRaw === "" ? null : Number(escalationRaw);
+
   if (!filePath) return { error: "Please attach the new certificate file." };
   if (!id) return fail("Choose which certificate you're updating.");
   if (!expiryRaw || !expiryDate || Number.isNaN(expiryDate.getTime()))
     return fail("The new version's expiry date is required.");
+  if (
+    reminderDaysBefore !== null &&
+    (!Number.isFinite(reminderDaysBefore) || reminderDaysBefore < 0)
+  )
+    return fail("Advance reminder days must be 0 or more.");
+  if (
+    escalationDays !== null &&
+    (!Number.isFinite(escalationDays) || escalationDays < 0)
+  )
+    return fail("Escalation days must be a positive number.");
 
   const upload = await claimUpload(supabase, user.id, filePath);
   if (!upload.ok) return fail(upload.error);
@@ -331,7 +351,9 @@ export async function uploadNewVersion(
   // RLS scopes this to the caller's own certificate (or any, for an admin).
   const { data: existing, error: fetchError } = await supabase
     .from("documents")
-    .select("id, cert_type, versions:document_versions(*)")
+    .select(
+      "id, cert_type, reminder_days_before, escalation_days, versions:document_versions(*)",
+    )
     .eq("id", id)
     .single();
 
@@ -388,6 +410,10 @@ export async function uploadNewVersion(
       file_type: upload.type,
       file_size: upload.size,
       expiry_date: expiryDate.toISOString(),
+      reminder_days_before: Math.round(
+        reminderDaysBefore ?? existing.reminder_days_before,
+      ),
+      escalation_days: Math.round(escalationDays ?? existing.escalation_days),
       status: "active",
       reminded_at: null,
       notified_at: null,
