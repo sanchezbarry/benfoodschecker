@@ -20,6 +20,7 @@ import { daysUntil, formatBytes, formatDate, formatDateTime } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import {
   Card,
   CardContent,
@@ -203,8 +204,21 @@ function CertRow({ doc, canWrite }: { doc: CertDocument; canWrite: boolean }) {
   );
 }
 
-/** Group certificates under their vendor / customer folder, folders A→Z. */
-function groupByFolder(documents: CertDocument[]) {
+/** Which end of the expiry range the list leads with. */
+type SortOrder = "soonest" | "furthest";
+
+const expiryOf = (doc: CertDocument) => new Date(doc.expiry_date).getTime();
+
+/**
+ * Group certificates under their vendor / customer folder, ordered by expiry.
+ *
+ * The folders follow their own most pressing certificate rather than staying
+ * A→Z: sorting only *inside* each folder would reorder rows buried down the
+ * page while the thing the user is hunting for — what expires next — stayed
+ * wherever its vendor code happened to fall. Folders whose leading certificate
+ * expires on the same day keep the old A→Z order between them.
+ */
+function groupByFolder(documents: CertDocument[], order: SortOrder) {
   const groups = new Map<
     string,
     { code: string; name: string; docs: CertDocument[] }
@@ -221,7 +235,20 @@ function groupByFolder(documents: CertDocument[]) {
     groups.set(key, group);
   }
 
-  return [...groups.values()].sort((a, b) => a.code.localeCompare(b.code));
+  const direction = order === "soonest" ? 1 : -1;
+  const grouped = [...groups.values()];
+
+  for (const group of grouped) {
+    group.docs.sort((a, b) => (expiryOf(a) - expiryOf(b)) * direction);
+  }
+
+  // After that sort every group leads with the certificate it should be
+  // ranked by, whichever direction was chosen.
+  return grouped.sort(
+    (a, b) =>
+      (expiryOf(a.docs[0]) - expiryOf(b.docs[0])) * direction ||
+      a.code.localeCompare(b.code),
+  );
 }
 
 export function DocumentsList({
@@ -236,6 +263,7 @@ export function DocumentsList({
   canWrite: boolean;
 }) {
   const [query, setQuery] = useState("");
+  const [order, setOrder] = useState<SortOrder>("soonest");
 
   // Vendor code and name only, as asked. Tokenised so "fresh life" matches
   // "Fresh Life Pte Ltd" and "FL001 fresh" matches too.
@@ -264,7 +292,7 @@ export function DocumentsList({
     );
   }
 
-  const groups = groupByFolder(matches);
+  const groups = groupByFolder(matches, order);
   const filtering = query.trim().length > 0;
 
   return (
@@ -279,26 +307,37 @@ export function DocumentsList({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search by vendor code or name…"
-            aria-label="Search certificates by vendor code or name"
-            className="pl-9 pr-9"
-          />
-          {filtering && (
-            <button
-              type="button"
-              onClick={() => setQuery("")}
-              aria-label="Clear search"
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground"
-            >
-              <X className="size-4" />
-            </button>
-          )}
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search by vendor code or name…"
+              aria-label="Search certificates by vendor code or name"
+              className="pl-9 pr-9"
+            />
+            {filtering && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground"
+              >
+                <X className="size-4" />
+              </button>
+            )}
+          </div>
+          <Select
+            value={order}
+            onChange={(e) => setOrder(e.target.value as SortOrder)}
+            aria-label="Sort certificates by expiry date"
+            className="sm:w-56"
+          >
+            <option value="soonest">Closest to expiry first</option>
+            <option value="furthest">Furthest from expiry first</option>
+          </Select>
         </div>
 
         {groups.length === 0 && (
