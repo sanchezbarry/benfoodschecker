@@ -9,6 +9,9 @@ escalating email reminders**.
   (code + name, e.g. `FL001 — Fresh Life Pte Ltd`)
 - **Versions** — upload a new version of a certificate and choose to **retain**
   or **delete** the old one. Only the newest version's expiry date is tracked.
+- **Edit** — fix the vendor code, vendor name or expiry date typed at upload,
+  without deleting the certificate and losing its history. Admins can do it on
+  anyone's behalf.
 - **Upload** — PDFs or images, sent **straight from the browser** to a private
   Supabase Storage bucket via a signed upload URL, restricted to
   PDF/PNG/JPG/WEBP and capped at **25 MB** once stored
@@ -103,7 +106,8 @@ code.
 Reminder state lives in `documents.status` (`active → notified → escalated`).
 Because each email is tied to a status transition, the job is **idempotent** —
 running it repeatedly never double-sends. Uploading a new version resets the
-status to `active`, which re-arms the workflow against the new expiry date.
+status to `active`, which re-arms the workflow against the new expiry date — and
+so does correcting the expiry from the **Edit** panel.
 
 ### Roles
 
@@ -159,7 +163,10 @@ themselves — that would lock them out on the next page load.
    - an existing database → the numbered files in
      [`supabase/migrations/`](supabase/migrations) in order. `002` is the big one
      (folders + versioning); `003` raises the bucket size limit; `004` adds the
-     `department` role. `002` specifically applies to a v1 database (a
+     `department` role; `005` adds the advance reminder; `006` pins every stored
+     expiry to Singapore midnight; `007` lets a user rename a vendor folder that
+     holds only their own certificates. `002` specifically applies to a v1
+     database (a
      `documents` table with a `name` column and no folders).
      It backfills every existing certificate into an `UNSORTED` folder, turns its
      old `name` into the certificate type, and seeds version 1 of each file.
@@ -324,8 +331,45 @@ would let anyone who found a signed-in browser lock the real owner out.
 | File, contacts, escalation window | PDF/image, the two email recipients, and the grace period |
 
 Typing a code that already exists files the certificate into that folder and
-keeps the folder's stored name — renaming a vendor is an admin action, so a typo
-here can't rewrite it for everybody.
+keeps the folder's stored name. Filing never renames a vendor: a name typed
+absent-mindedly next to a familiar code must not rewrite that vendor on
+everybody else's certificates. Renaming is a deliberate act, so it lives in
+**Edit**.
+
+### Editing a certificate (`/dashboard`)
+
+Every certificate row has an **Edit** panel for correcting what was typed when
+it was filed — vendor code, vendor name and expiry date — so a mistake no longer
+means deleting the certificate and losing its version history. Owners edit their
+own; admins edit anyone's, from the same list. Department accounts see no Edit
+button, and the Server Action refuses them anyway.
+
+| Field | What editing it does |
+| --- | --- |
+| Vendor / customer code | decides which folder the certificate is filed under — an existing code **moves** it there, a new code creates the folder |
+| Vendor / customer name | **renames** the vendor, if the folder holds none of anyone else's certificates; otherwise the stored name stands and the reply says so |
+| Expiry date | written to the certificate **and** to its current version, which the certificate mirrors |
+
+The file, the PIC and the owner are deliberately out of scope: replacing the
+file is what a new version is for, and an admin editing on someone's behalf
+never becomes the owner.
+
+A folder is shared, so renaming it rewrites the vendor shown on every
+certificate inside — which is why it was admin-only. That reasoning stops
+applying when the folder holds nothing but the caller's own certificates, and
+that is exactly the case someone hits after mistyping a vendor name while
+creating the folder from the upload form. The rule is enforced in the database
+by `public.owns_folder_contents()`, which is `security definer` on purpose: a
+policy expression is part of the query it guards, so a plain sub-select on
+`documents` would be filtered by that table's own RLS, other people's
+certificates would be invisible, and one certificate in a shared folder would be
+enough to rename it for everybody.
+
+Changing the expiry re-arms all three reminder levels (`status` back to
+`active`, the three timestamps cleared), so a certificate that was chased — or
+escalated — against the wrong day is reconsidered against the right one. An
+unchanged date leaves reminder state alone, so fixing a vendor typo never
+re-sends an email.
 
 ### New versions
 
@@ -345,7 +389,9 @@ the certificate and reminder state resets to `active`.
   admin. Deleting a user also deletes their certificates and stored files. You
   can't delete yourself or either permanent admin.
 - **Vendor / customer folders** — create, rename, delete. A folder that still
-  holds certificates can't be deleted; refile or delete them first.
+  holds certificates can't be deleted; refile or delete them first. Admins are
+  the only ones who can rename a folder shared between several people's
+  certificates, or delete an empty one.
 - **Notification tests** — send a Level 0, Level 1 or Level 2 email to any
   address you type in (escalation takes a "to" and an optional "cc"). Test emails
   are badged as tests and change nothing in the database. A separate **Run
@@ -411,6 +457,10 @@ the advance reminder fires again against the new date.
   policies: `auth.uid() = user_id`, widened to everything for `public.is_admin()`.
 - Every admin Server Action re-derives the caller's admin status from the
   session. Nothing about who the caller is comes from the form.
+- The one policy that has to see rows the caller cannot goes through a
+  `security definer` function (`public.owns_folder_contents`) rather than an
+  inline sub-select, which RLS would have quietly filtered — see
+  [Editing a certificate](#editing-a-certificate-dashboard).
 - There is no sign-up Server Action at all — a Server Action is a reachable POST
   endpoint whether or not any UI calls it, so closing self-registration means
   deleting the action, not hiding a button.

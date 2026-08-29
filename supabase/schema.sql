@@ -152,8 +152,9 @@ create unique index document_versions_single_current
 alter table public.folders enable row level security;
 
 -- Every signed-in user needs to read the vendor list to file a certificate,
--- and may add a vendor on the fly from the upload form. Renaming and deleting
--- folders is an admin-only operation.
+-- and may add a vendor on the fly from the upload form. Renaming is admin-only
+-- unless the folder holds only the caller's own certificates (see
+-- owns_folder_contents below); deleting is always an admin operation.
 create policy "folders - read for all signed-in users"
   on public.folders for select
   to authenticated
@@ -164,11 +165,44 @@ create policy "folders - any signed-in user may add"
   to authenticated
   with check (auth.uid() is not null and public.can_write());
 
-create policy "folders - admins may amend"
+-- "Is this folder entirely mine?" — the test that lets a user correct a vendor
+-- name they mistyped while creating the folder from the upload form.
+--
+-- SECURITY DEFINER is load-bearing, not incidental. A policy expression is part
+-- of the query it guards, so a plain sub-select on `documents` would itself be
+-- filtered by that table's RLS: other people's certificates would be invisible,
+-- `not exists (... someone else's ...)` would always hold, and one certificate
+-- in a shared folder would be enough to rename it for everybody. Running as the
+-- owner is what lets the check count the rows it is supposed to count.
+--
+-- An empty folder answers false, so tidying up unused folders stays admin-only.
+create or replace function public.owns_folder_contents(folder uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select public.can_write()
+     and exists (
+       select 1 from public.documents d
+       where d.folder_id = folder and d.user_id = auth.uid()
+     )
+     and not exists (
+       select 1 from public.documents d
+       where d.folder_id = folder and d.user_id <> auth.uid()
+     );
+$$;
+
+-- Renaming a folder rewrites the vendor shown on every certificate inside it,
+-- so it stays an admin job — except when the folder holds nothing but the
+-- caller's own certificates, where there is nobody else to affect.
+-- `folders_code_unique` still rejects a rename onto a code already in use.
+create policy "folders - admin or sole owner may amend"
   on public.folders for update
   to authenticated
-  using (public.is_admin())
-  with check (public.is_admin());
+  using (public.is_admin() or public.owns_folder_contents(id))
+  with check (public.is_admin() or public.owns_folder_contents(id));
 
 create policy "folders - admins may delete"
   on public.folders for delete

@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { getSession } from "@/lib/session";
 import { displayName } from "@/lib/auth";
 import type { DocumentVersion } from "@/lib/types";
+import { formatDate } from "@/lib/utils";
 import {
   ACCEPTED_MIME_TYPES,
   DEFAULT_ESCALATION_DAYS,
@@ -140,6 +141,61 @@ async function discard(supabase: SessionClient, path: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Vendor folders
+// ---------------------------------------------------------------------------
+
+type Vendor = { id: string; code: string; name: string };
+
+/**
+ * Find the folder a vendor code names, creating it with `name` when the code is
+ * new. Shared by filing a certificate and by correcting one, so both read a
+ * typed code the same way: the code decides which folder the certificate lives
+ * in, and nothing else.
+ *
+ * `ilike` narrows the search, but a code containing % or _ would match as a
+ * wildcard, so the exact (case-insensitive) match is confirmed in JS — the same
+ * comparison the folders_code_unique index uses.
+ *
+ * Whether the caller's `name` may overwrite an existing folder's is left to the
+ * caller: filing keeps the stored name, correcting tries to rename.
+ */
+async function resolveVendorFolder(
+  supabase: SessionClient,
+  userId: string,
+  code: string,
+  name: string,
+): Promise<
+  { ok: true; folder: Vendor; created: boolean } | { ok: false; error: string }
+> {
+  const { data: candidates, error: lookupError } = await supabase
+    .from("folders")
+    .select("id, code, name")
+    .ilike("code", code);
+
+  if (lookupError)
+    return { ok: false, error: `Could not look up the vendor: ${lookupError.message}` };
+
+  const existing = candidates?.find(
+    (f) => f.code.toLowerCase() === code.toLowerCase(),
+  );
+  if (existing) return { ok: true, folder: existing, created: false };
+
+  const { data: created, error: createError } = await supabase
+    .from("folders")
+    .insert({ code, name, created_by: userId })
+    .select("id, code, name")
+    .single();
+
+  if (createError || !created)
+    return {
+      ok: false,
+      error: `Could not create the vendor folder: ${createError?.message ?? "unknown error"}`,
+    };
+
+  return { ok: true, folder: created, created: true };
+}
+
+// ---------------------------------------------------------------------------
 // Create
 // ---------------------------------------------------------------------------
 
@@ -148,8 +204,10 @@ async function discard(supabase: SessionClient, path: string) {
  *
  * Vendor code and name are free text with dropdown hints. An unrecognised code
  * creates the vendor folder on the fly; a code that already exists files the
- * certificate into that folder and keeps the folder's stored name (renaming a
- * vendor is an admin action, so a typo here can't rewrite it for everyone).
+ * certificate into that folder and keeps the folder's stored name. Filing never
+ * renames a vendor: a name typed absent-mindedly next to a familiar code must
+ * not rewrite that vendor on everyone else's certificates. Renaming is a
+ * deliberate act, so it lives in `updateDocument`.
  */
 export async function createDocument(
   _prev: ActionState,
@@ -202,39 +260,20 @@ export async function createDocument(
   if (!upload.ok) return fail(upload.error);
 
   // ---- Resolve (or create) the vendor folder ----
-  // `ilike` narrows the search, but a code containing % or _ would match as a
-  // wildcard, so the exact (case-insensitive) match is confirmed in JS — the
-  // same comparison the folders_code_unique index uses.
-  const { data: candidates, error: folderLookupError } = await supabase
-    .from("folders")
-    .select("id, code, name")
-    .ilike("code", vendorCode);
+  const resolved = await resolveVendorFolder(
+    supabase,
+    user.id,
+    vendorCode,
+    vendorName,
+  );
+  if (!resolved.ok) return fail(resolved.error);
 
-  if (folderLookupError)
-    return fail(`Could not look up the vendor: ${folderLookupError.message}`);
-
-  let folder =
-    candidates?.find(
-      (f) => f.code.toLowerCase() === vendorCode.toLowerCase(),
-    ) ?? null;
-  let folderNote = "";
-
-  if (!folder) {
-    const { data: created, error: folderError } = await supabase
-      .from("folders")
-      .insert({ code: vendorCode, name: vendorName, created_by: user.id })
-      .select("id, code, name")
-      .single();
-
-    if (folderError || !created)
-      return fail(
-        `Could not create the vendor folder: ${folderError?.message ?? "unknown error"}`,
-      );
-    folder = created;
-    folderNote = ` New vendor folder ${created.code} created.`;
-  } else if (folder.name.toLowerCase() !== vendorName.toLowerCase()) {
-    folderNote = ` Filed under the existing vendor ${folder.code} — ${folder.name}; ask an admin to rename it if that's wrong.`;
-  }
+  const { folder } = resolved;
+  const folderNote = resolved.created
+    ? ` New vendor folder ${folder.code} created.`
+    : folder.name.toLowerCase() !== vendorName.toLowerCase()
+      ? ` Filed under the existing vendor ${folder.code} — ${folder.name}; you can correct the name from the certificate's Edit panel.`
+      : "";
 
   // ---- Insert the certificate, then its first version ----
   const pic = displayName(user);
@@ -450,6 +489,171 @@ export async function uploadNewVersion(
   revalidatePath("/dashboard");
   return {
     success: `Version ${nextVersion} of "${existing.cert_type}" is now the tracked certificate.${note}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Edit
+// ---------------------------------------------------------------------------
+
+/**
+ * Correct the details of a certificate that is already on file: which vendor it
+ * belongs to, and when it expires. For fixing a mistake made at upload time,
+ * without deleting the certificate and losing its version history.
+ *
+ * The vendor **code** decides which folder the certificate sits in — exactly as
+ * it does when filing one. An existing code (case-insensitively) re-files it
+ * there; a code nobody has used creates the folder. So "I filed this under the
+ * wrong vendor" is fixed by correcting the code.
+ *
+ * The vendor **name** belongs to the folder, which is shared, so a changed name
+ * is a rename attempt rather than a certain thing: the database allows it for an
+ * admin, or when the folder holds nothing but the caller's own certificates. If
+ * it holds someone else's too, the stored name stands and the reply says so.
+ *
+ * The **expiry** is written to the certificate and to its current version, which
+ * `documents.expiry_date` mirrors — they must not drift apart, or the history
+ * would contradict the date the reminder job watches. A changed date re-arms all
+ * three reminder levels, so a certificate chased against the wrong day is
+ * reconsidered against the right one; an unchanged date leaves reminder state
+ * alone, so fixing a vendor typo never re-sends an email.
+ *
+ * The file, the PIC and the owner are untouched — replacing the file is what
+ * `uploadNewVersion` is for. An admin editing on someone's behalf does not
+ * become the owner.
+ */
+export async function updateDocument(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const { supabase, user, write } = await getSession();
+  if (!user) return { error: "You must be signed in." };
+  if (!write) return { error: "Your account is view-only, so it can't change certificates." };
+
+  const id = String(formData.get("id") ?? "");
+  const vendorCode = String(formData.get("vendor_code") ?? "").trim();
+  const vendorName = String(formData.get("vendor_name") ?? "").trim();
+  const expiryRaw = String(formData.get("expiry_date") ?? "");
+  const expiryDate = expiryRaw ? new Date(expiryRaw) : null;
+
+  if (!id) return { error: "Choose which certificate you're editing." };
+  if (!vendorCode) return { error: "Vendor / customer code is required." };
+  if (!vendorName) return { error: "Vendor / customer name is required." };
+  if (!expiryRaw || !expiryDate || Number.isNaN(expiryDate.getTime()))
+    return { error: "Expiry date is required." };
+
+  // RLS scopes this to the caller's own certificate (or any, for an admin), so
+  // the id off the form can only ever name a row they are allowed to change.
+  // Every prior value is read here so the change can be undone below.
+  const { data: existing, error: fetchError } = await supabase
+    .from("documents")
+    .select(
+      "id, cert_type, folder_id, expiry_date, status, reminded_at, notified_at, escalated_at",
+    )
+    .eq("id", id)
+    .single();
+
+  if (fetchError || !existing) return { error: "Could not find that certificate." };
+
+  const resolved = await resolveVendorFolder(
+    supabase,
+    user.id,
+    vendorCode,
+    vendorName,
+  );
+  if (!resolved.ok) return { error: resolved.error };
+
+  const { folder } = resolved;
+  const changes: string[] = [];
+  let note = "";
+
+  // ---- Vendor ----
+  if (resolved.created) {
+    changes.push(`filed under the new vendor ${folder.code} — ${folder.name}`);
+  } else {
+    if (folder.id !== existing.folder_id)
+      changes.push(`refiled under ${folder.code} — ${folder.name}`);
+
+    // Compared exactly, not case-insensitively: "fresh life pte ltd" →
+    // "Fresh Life Pte Ltd" is a correction someone deliberately typed.
+    if (folder.name !== vendorName) {
+      const { data: renamed } = await supabase
+        .from("folders")
+        .update({ name: vendorName })
+        .eq("id", folder.id)
+        .select("id");
+
+      // No error and no row means the policy declined it — the folder holds
+      // certificates belonging to other people, so this is not the caller's
+      // name to change.
+      if (renamed && renamed.length > 0) {
+        changes.push(`vendor ${folder.code} renamed to ${vendorName}`);
+      } else {
+        note = ` The name stayed ${folder.name}: ${folder.code} also holds other people's certificates, so only an admin can rename it.`;
+      }
+    }
+  }
+
+  // ---- Expiry ----
+  const expiryIso = expiryDate.toISOString();
+  const expiryChanged =
+    new Date(existing.expiry_date).getTime() !== expiryDate.getTime();
+  if (expiryChanged) changes.push(`expiry corrected to ${formatDate(expiryIso)}`);
+
+  const { error: updateError } = await supabase
+    .from("documents")
+    .update({
+      folder_id: folder.id,
+      expiry_date: expiryIso,
+      ...(expiryChanged
+        ? {
+            status: "active",
+            reminded_at: null,
+            notified_at: null,
+            escalated_at: null,
+          }
+        : {}),
+    })
+    .eq("id", id);
+
+  if (updateError)
+    return { error: `Could not save the change: ${updateError.message}` };
+
+  if (expiryChanged) {
+    const { error: versionError } = await supabase
+      .from("document_versions")
+      .update({ expiry_date: expiryIso })
+      .eq("document_id", id)
+      .eq("is_current", true);
+
+    // Put the certificate back rather than leave the tracked date and the
+    // version it is supposed to mirror out of step.
+    if (versionError) {
+      await supabase
+        .from("documents")
+        .update({
+          folder_id: existing.folder_id,
+          expiry_date: existing.expiry_date,
+          status: existing.status,
+          reminded_at: existing.reminded_at,
+          notified_at: existing.notified_at,
+          escalated_at: existing.escalated_at,
+        })
+        .eq("id", id);
+      return { error: `Could not save the change: ${versionError.message}` };
+    }
+  }
+
+  revalidatePath("/dashboard");
+
+  if (changes.length === 0)
+    return { success: `No changes to save on "${existing.cert_type}".${note}` };
+
+  return {
+    success:
+      `"${existing.cert_type}" updated — ${changes.join("; ")}.` +
+      (expiryChanged ? " Reminders re-armed against the new date." : "") +
+      note,
   };
 }
 

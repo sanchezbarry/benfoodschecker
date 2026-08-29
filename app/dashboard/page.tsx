@@ -92,6 +92,7 @@ export default async function DashboardPage() {
           documents={documents}
           viewAll={viewAll}
           canWrite={write}
+          vendors={suggestions.vendors}
         />
         <ChangePasswordForm />
       </main>

@@ -1,6 +1,13 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import {
+  useActionState,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
+import { useFormStatus } from "react-dom";
 import {
   AlertTriangle,
   BellRing,
@@ -9,17 +16,28 @@ import {
   Folder as FolderIcon,
   History,
   Loader2,
+  Pencil,
+  Save,
   Search,
   Trash2,
   X,
 } from "lucide-react";
 
-import { deleteDocument, deleteVersion, getSignedUrl } from "./actions";
-import type { CertDocument, DocumentVersion } from "@/lib/types";
+import {
+  deleteDocument,
+  deleteVersion,
+  getSignedUrl,
+  updateDocument,
+  type ActionState,
+} from "./actions";
+import type { CertDocument, DocumentVersion, Suggestions } from "@/lib/types";
 import { daysUntil, formatBytes, formatDate, formatDateTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ComboboxInput } from "@/components/ui/combobox-input";
+import { DateInput } from "@/components/ui/date-input";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import {
   Card,
@@ -114,6 +132,136 @@ function DeleteVersionButton({ version }: { version: DocumentVersion }) {
   );
 }
 
+function SaveButton() {
+  const { pending } = useFormStatus();
+  return (
+    <Button type="submit" size="sm" disabled={pending}>
+      {pending ? <Loader2 className="animate-spin" /> : <Save />}
+      {pending ? "Saving…" : "Save changes"}
+    </Button>
+  );
+}
+
+/**
+ * Fix what was typed when the certificate was filed: the vendor it belongs to
+ * and the date it expires. The file is not touched here — replacing that is
+ * what "Upload a new version" is for.
+ *
+ * Code and name behave exactly as they do on the upload form, including filling
+ * each other in, so correcting a vendor is the same gesture as choosing one.
+ */
+function EditCertForm({
+  doc,
+  vendors,
+  onClose,
+}: {
+  doc: CertDocument;
+  vendors: Suggestions["vendors"];
+  onClose: () => void;
+}) {
+  const [state, formAction] = useActionState<ActionState, FormData>(
+    updateDocument,
+    null,
+  );
+
+  // Written to the sibling input through a ref rather than through state, so
+  // the fields stay uncontrolled and keep whatever the user has typed.
+  const codeRef = useRef<HTMLInputElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  const codes = useMemo(() => vendors.map((v) => v.code), [vendors]);
+  const names = useMemo(() => vendors.map((v) => v.name), [vendors]);
+
+  function findVendor(key: "code" | "name", value: string) {
+    const needle = value.trim().toLowerCase();
+    if (!needle) return undefined;
+    return vendors.find((v) => v[key].toLowerCase() === needle);
+  }
+
+  function onCodeChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const match = findVendor("code", e.target.value);
+    if (match && nameRef.current) nameRef.current.value = match.name;
+  }
+
+  function onNameChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const match = findVendor("name", e.target.value);
+    if (match && codeRef.current) codeRef.current.value = match.code;
+  }
+
+  return (
+    <form
+      action={formAction}
+      className="mt-3 space-y-3 rounded-lg border bg-muted/30 p-3"
+    >
+      <input type="hidden" name="id" value={doc.id} />
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="space-y-2">
+          <Label htmlFor={`edit-code-${doc.id}`}>Vendor / customer code</Label>
+          <ComboboxInput
+            id={`edit-code-${doc.id}`}
+            name="vendor_code"
+            options={codes}
+            ref={codeRef}
+            defaultValue={doc.folder?.code ?? ""}
+            onChange={onCodeChange}
+            className="font-mono"
+            autoComplete="off"
+            required
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`edit-name-${doc.id}`}>Vendor / customer name</Label>
+          <ComboboxInput
+            id={`edit-name-${doc.id}`}
+            name="vendor_name"
+            options={names}
+            ref={nameRef}
+            defaultValue={doc.folder?.name ?? ""}
+            onChange={onNameChange}
+            autoComplete="off"
+            required
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`edit-expiry-${doc.id}`}>Expiry date</Label>
+          <DateInput
+            id={`edit-expiry-${doc.id}`}
+            name="expiry_date"
+            defaultValue={doc.expiry_date}
+            required
+          />
+        </div>
+      </div>
+
+      <p className="text-xs text-muted-foreground">
+        The code decides which folder this certificate is filed under — an
+        existing code moves it there, a new one creates the folder. A changed
+        name renames the vendor, as long as the folder holds none of anyone
+        else&apos;s certificates. Correcting the expiry re-arms the reminders;
+        to replace the file itself, upload a new version.
+      </p>
+
+      {state?.error && (
+        <p className="text-sm text-destructive" role="alert">
+          {state.error}
+        </p>
+      )}
+      {state?.success && (
+        <p className="text-sm text-primary" role="status">
+          {state.success}
+        </p>
+      )}
+
+      <div className="flex items-center gap-2">
+        <SaveButton />
+        <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+          {state?.success ? "Close" : "Cancel"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 function VersionHistory({
   doc,
   canWrite,
@@ -163,7 +311,17 @@ function VersionHistory({
   );
 }
 
-function CertRow({ doc, canWrite }: { doc: CertDocument; canWrite: boolean }) {
+function CertRow({
+  doc,
+  canWrite,
+  vendors,
+}: {
+  doc: CertDocument;
+  canWrite: boolean;
+  vendors: Suggestions["vendors"];
+}) {
+  const [editing, setEditing] = useState(false);
+
   return (
     <div className="rounded-lg border p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -196,9 +354,27 @@ function CertRow({ doc, canWrite }: { doc: CertDocument; canWrite: boolean }) {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <ViewButton path={doc.file_path} />
+          {canWrite && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setEditing((open) => !open)}
+              aria-expanded={editing}
+            >
+              <Pencil />
+              {editing ? "Close" : "Edit"}
+            </Button>
+          )}
           {canWrite && <DeleteDocumentButton doc={doc} />}
         </div>
       </div>
+      {canWrite && editing && (
+        <EditCertForm
+          doc={doc}
+          vendors={vendors}
+          onClose={() => setEditing(false)}
+        />
+      )}
       <VersionHistory doc={doc} canWrite={canWrite} />
     </div>
   );
@@ -255,12 +431,18 @@ export function DocumentsList({
   documents,
   viewAll,
   canWrite,
+  vendors,
 }: {
   documents: CertDocument[];
   /** Whether this account sees everyone's certificates, not just its own. */
   viewAll: boolean;
-  /** Department accounts are view-only, so their delete controls are dropped. */
+  /**
+   * Department accounts are view-only, so their edit and delete controls are
+   * dropped. Admins keep theirs on every row, not just their own.
+   */
   canWrite: boolean;
+  /** Existing vendors, offered as hints on the edit form. */
+  vendors: Suggestions["vendors"];
 }) {
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState<SortOrder>("soonest");
@@ -356,7 +538,12 @@ export function DocumentsList({
             </h3>
             <div className="space-y-3">
               {group.docs.map((doc) => (
-                <CertRow key={doc.id} doc={doc} canWrite={canWrite} />
+                <CertRow
+                  key={doc.id}
+                  doc={doc}
+                  canWrite={canWrite}
+                  vendors={vendors}
+                />
               ))}
             </div>
           </section>

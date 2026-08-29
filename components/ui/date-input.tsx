@@ -2,7 +2,21 @@
 
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
-import { APP_UTC_OFFSET } from "@/lib/constants";
+import { APP_TIME_ZONE, APP_UTC_OFFSET } from "@/lib/constants";
+
+/** The calendar date a stored expiry falls on in the company timezone. */
+function appCalendarDate(value: string | null | undefined) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  // en-CA renders as YYYY-MM-DD, which is what <input type="date"> wants.
+  return date.toLocaleDateString("en-CA", { timeZone: APP_TIME_ZONE });
+}
+
+/** A picked "YYYY-MM-DD" as the instant Singapore midnight falls on that day. */
+function appMidnight(day: string) {
+  return day ? new Date(`${day}T00:00:00${APP_UTC_OFFSET}`).toISOString() : "";
+}
 
 /**
  * A date picker that submits the chosen calendar date as midnight **Singapore
@@ -18,28 +32,41 @@ import { APP_UTC_OFFSET } from "@/lib/constants";
  * the date is stored against one fixed zone and `formatDate` reads it back in
  * that same zone, so every viewer and the server agree — including anyone
  * filing a certificate while travelling.
+ *
+ * `defaultValue` takes a stored expiry (an ISO timestamp) for the edit form,
+ * and is put back through the same conversion rather than resubmitted as-is, so
+ * a row written before that pinning existed is corrected by being re-saved.
  */
 export function DateInput({
   id,
   name,
   required,
+  defaultValue,
 }: {
   id: string;
   name: string;
   required?: boolean;
+  /** A stored ISO timestamp to prefill, in the company timezone. */
+  defaultValue?: string | null;
 }) {
-  const [iso, setIso] = useState("");
+  const initial = appCalendarDate(defaultValue);
+  const [iso, setIso] = useState(() => appMidnight(initial));
 
   function onChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const raw = e.target.value; // "YYYY-MM-DD", or "" when cleared
-    // The explicit offset is what makes this Singapore midnight rather
-    // than the visitor's midnight.
-    setIso(raw ? new Date(`${raw}T00:00:00${APP_UTC_OFFSET}`).toISOString() : "");
+    // "YYYY-MM-DD", or "" when cleared. The explicit offset is what makes this
+    // Singapore midnight rather than the visitor's midnight.
+    setIso(appMidnight(e.target.value));
   }
 
   return (
     <>
-      <Input id={id} type="date" required={required} onChange={onChange} />
+      <Input
+        id={id}
+        type="date"
+        required={required}
+        defaultValue={initial}
+        onChange={onChange}
+      />
       <input type="hidden" name={name} value={iso} />
     </>
   );
