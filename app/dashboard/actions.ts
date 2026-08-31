@@ -9,6 +9,7 @@ import {
   ACCEPTED_MIME_TYPES,
   DEFAULT_ESCALATION_DAYS,
   DEFAULT_REMINDER_DAYS_BEFORE,
+  DEFAULT_SECOND_REMINDER_DAYS_BEFORE,
   DOCUMENTS_BUCKET,
   MAX_FILE_SIZE,
   MAX_FILE_SIZE_LABEL,
@@ -196,6 +197,30 @@ async function resolveVendorFolder(
 }
 
 // ---------------------------------------------------------------------------
+// Reminder schedule
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate the pair of advance-reminder lead times, returning the problem to
+ * show the user or `null` when they are fine.
+ *
+ * The second reminder is the nearer one, so it has to be the smaller number:
+ * equal values would send two identical emails on the same morning, and an
+ * inverted pair would label the early warning as the last one. Either may be 0,
+ * which switches that reminder off, and 0 is exempt from the ordering rule —
+ * "no first reminder, then one 30 days out" is a real thing to want.
+ */
+function checkReminderDays(first: number, second: number): string | null {
+  if (!Number.isFinite(first) || first < 0)
+    return "First reminder days must be 0 or more.";
+  if (!Number.isFinite(second) || second < 0)
+    return "Second reminder days must be 0 or more.";
+  if (first > 0 && second > 0 && second >= first)
+    return "The second reminder must be closer to expiry than the first — give it fewer days.";
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Create
 // ---------------------------------------------------------------------------
 
@@ -239,6 +264,10 @@ export async function createDocument(
   const reminderDaysBefore = Number(
     formData.get("reminder_days_before") ?? DEFAULT_REMINDER_DAYS_BEFORE,
   );
+  const secondReminderDaysBefore = Number(
+    formData.get("second_reminder_days_before") ??
+      DEFAULT_SECOND_REMINDER_DAYS_BEFORE,
+  );
 
   // ---- Validation ----
   if (!filePath) return { error: "Please attach a certificate file." };
@@ -253,8 +282,11 @@ export async function createDocument(
     return fail("Enter a valid senior management email.");
   if (!Number.isFinite(escalationDays) || escalationDays < 0)
     return fail("Escalation days must be a positive number.");
-  if (!Number.isFinite(reminderDaysBefore) || reminderDaysBefore < 0)
-    return fail("Advance reminder days must be 0 or more.");
+  const reminderProblem = checkReminderDays(
+    reminderDaysBefore,
+    secondReminderDaysBefore,
+  );
+  if (reminderProblem) return fail(reminderProblem);
 
   const upload = await claimUpload(supabase, user.id, filePath);
   if (!upload.ok) return fail(upload.error);
@@ -292,6 +324,7 @@ export async function createDocument(
       marketing_email: marketingEmail,
       management_email: managementEmail,
       reminder_days_before: Math.round(reminderDaysBefore),
+      second_reminder_days_before: Math.round(secondReminderDaysBefore),
       escalation_days: Math.round(escalationDays),
     })
     .select("id")
@@ -332,17 +365,22 @@ export async function createDocument(
  * file.
  *
  * The new version becomes the current one and its expiry is mirrored onto the
- * `documents` row, so the reminder job tracks it and nothing else: a retained
- * older version keeps its own recorded expiry for reference only. All three
- * reminder levels reset, so the advance reminder fires again against the new
+ * `documents` row, so the reminder job tracks it and nothing else. All four
+ * reminder levels reset, so the advance reminders fire again against the new
  * date rather than being suppressed by the previous cycle.
  *
  * The reminder schedule can be retuned as part of the renewal — a certificate
- * that now needs more lead time gets it here. Both fields are optional on the
+ * that now needs more lead time gets it here. The fields are optional on the
  * wire: omitted, the certificate keeps the schedule it already had.
  *
- * `old_versions` = "retain" keeps the previous files as history; "delete"
- * removes them (rows and stored files) once the new version is safely in place.
+ * The version being replaced is deleted, rows and stored files both, once the
+ * new one is safely in place. Keeping the old file was a per-upload choice
+ * ("retain" vs "delete"); it is now the one behaviour, because a renewed
+ * certificate supersedes its predecessor outright and the retained copies were
+ * only accumulating storage. Reinstating the choice means restoring the
+ * `old_versions` branch marked RETAIN below and the fieldset in
+ * `new-version-form.tsx`; nothing in the schema was removed, and versions
+ * uploaded before this change are still on file.
  */
 export async function uploadNewVersion(
   _prev: ActionState,
@@ -361,23 +399,25 @@ export async function uploadNewVersion(
   const id = String(formData.get("id") ?? "");
   const expiryRaw = String(formData.get("expiry_date") ?? "");
   const expiryDate = expiryRaw ? new Date(expiryRaw) : null;
-  const deleteOld = String(formData.get("old_versions") ?? "retain") === "delete";
+  // RETAIN (removed): the form used to offer "retain" or "delete" here.
+  //   const deleteOld = String(formData.get("old_versions") ?? "retain") === "delete";
+  // Every prior version is now deleted unconditionally, below.
 
   // `null` here means "leave it alone", which is what an omitted field gets.
   const reminderRaw = String(formData.get("reminder_days_before") ?? "").trim();
+  const secondReminderRaw = String(
+    formData.get("second_reminder_days_before") ?? "",
+  ).trim();
   const escalationRaw = String(formData.get("escalation_days") ?? "").trim();
   const reminderDaysBefore = reminderRaw === "" ? null : Number(reminderRaw);
+  const secondReminderDaysBefore =
+    secondReminderRaw === "" ? null : Number(secondReminderRaw);
   const escalationDays = escalationRaw === "" ? null : Number(escalationRaw);
 
   if (!filePath) return { error: "Please attach the new certificate file." };
   if (!id) return fail("Choose which certificate you're updating.");
   if (!expiryRaw || !expiryDate || Number.isNaN(expiryDate.getTime()))
     return fail("The new version's expiry date is required.");
-  if (
-    reminderDaysBefore !== null &&
-    (!Number.isFinite(reminderDaysBefore) || reminderDaysBefore < 0)
-  )
-    return fail("Advance reminder days must be 0 or more.");
   if (
     escalationDays !== null &&
     (!Number.isFinite(escalationDays) || escalationDays < 0)
@@ -391,12 +431,26 @@ export async function uploadNewVersion(
   const { data: existing, error: fetchError } = await supabase
     .from("documents")
     .select(
-      "id, cert_type, reminder_days_before, escalation_days, versions:document_versions(*)",
+      "id, cert_type, reminder_days_before, second_reminder_days_before, escalation_days, versions:document_versions(*)",
     )
     .eq("id", id)
     .single();
 
   if (fetchError || !existing) return fail("Could not find that certificate.");
+
+  // An omitted field keeps what the certificate already uses, so the pair is
+  // only checkable once the stored values are known.
+  const nextReminderDays = Math.round(
+    reminderDaysBefore ?? existing.reminder_days_before,
+  );
+  const nextSecondReminderDays = Math.round(
+    secondReminderDaysBefore ?? existing.second_reminder_days_before,
+  );
+  const reminderProblem = checkReminderDays(
+    nextReminderDays,
+    nextSecondReminderDays,
+  );
+  if (reminderProblem) return fail(reminderProblem);
 
   const priorVersions = (existing.versions ?? []) as DocumentVersion[];
   const nextVersion =
@@ -449,12 +503,12 @@ export async function uploadNewVersion(
       file_type: upload.type,
       file_size: upload.size,
       expiry_date: expiryDate.toISOString(),
-      reminder_days_before: Math.round(
-        reminderDaysBefore ?? existing.reminder_days_before,
-      ),
+      reminder_days_before: nextReminderDays,
+      second_reminder_days_before: nextSecondReminderDays,
       escalation_days: Math.round(escalationDays ?? existing.escalation_days),
       status: "active",
       reminded_at: null,
+      second_reminded_at: null,
       notified_at: null,
       escalated_at: null,
     })
@@ -470,8 +524,17 @@ export async function uploadNewVersion(
     return fail(`Could not save the new version: ${updateError.message}`);
   }
 
-  let note = ` Version ${nextVersion - 1} kept in the history.`;
-  if (deleteOld && priorVersions.length > 0) {
+  // The superseded versions go, files and rows both. Deliberately last: the new
+  // version is current and mirrored onto the certificate by this point, so a
+  // failure here leaves stale files behind rather than a certificate pointing
+  // at a file that no longer exists.
+  //
+  // RETAIN (removed): this used to be conditional on `deleteOld`, with the
+  //   other branch leaving the old rows alone and reporting
+  //   `Version ${nextVersion - 1} kept in the history.` Restoring the choice
+  //   means putting that condition back around the block below.
+  let note = "";
+  if (priorVersions.length > 0) {
     const stalePaths = priorVersions.map((v) => v.file_path).filter(Boolean);
     if (stalePaths.length > 0) {
       await supabase.storage.from(DOCUMENTS_BUCKET).remove(stalePaths);
@@ -481,9 +544,7 @@ export async function uploadNewVersion(
       .delete()
       .eq("document_id", id)
       .neq("is_current", true);
-    note = ` ${priorVersions.length} older version${priorVersions.length === 1 ? "" : "s"} deleted.`;
-  } else if (priorVersions.length === 0) {
-    note = "";
+    note = ` ${priorVersions.length} earlier version${priorVersions.length === 1 ? "" : "s"} deleted.`;
   }
 
   revalidatePath("/dashboard");
@@ -514,9 +575,17 @@ export async function uploadNewVersion(
  * The **expiry** is written to the certificate and to its current version, which
  * `documents.expiry_date` mirrors — they must not drift apart, or the history
  * would contradict the date the reminder job watches. A changed date re-arms all
- * three reminder levels, so a certificate chased against the wrong day is
+ * four reminder levels, so a certificate chased against the wrong day is
  * reconsidered against the right one; an unchanged date leaves reminder state
  * alone, so fixing a vendor typo never re-sends an email.
+ *
+ * The **reminder schedule** — both advance lead times and the escalation window
+ * — is editable here too, because a certificate that turns out to need a longer
+ * run-up should not have to wait for its next renewal to get one. Changing a
+ * lead time does not un-send anything: a reminder already sent stays sent, so
+ * widening the window on a certificate that was reminded last week doesn't mail
+ * the contact a second time. One not yet sent simply fires against the new
+ * window on the next run.
  *
  * The file, the PIC and the owner are untouched — replacing the file is what
  * `uploadNewVersion` is for. An admin editing on someone's behalf does not
@@ -535,6 +604,15 @@ export async function updateDocument(
   const vendorName = String(formData.get("vendor_name") ?? "").trim();
   const expiryRaw = String(formData.get("expiry_date") ?? "");
   const expiryDate = expiryRaw ? new Date(expiryRaw) : null;
+  // `null` means "leave it alone", which is what an omitted field gets — never
+  // 0, which would silently switch a reminder off.
+  const optionalDays = (field: string) => {
+    const raw = String(formData.get(field) ?? "").trim();
+    return raw === "" ? null : Number(raw);
+  };
+  const reminderRaw = optionalDays("reminder_days_before");
+  const secondReminderRaw = optionalDays("second_reminder_days_before");
+  const escalationRaw = optionalDays("escalation_days");
 
   if (!id) return { error: "Choose which certificate you're editing." };
   if (!vendorCode) return { error: "Vendor / customer code is required." };
@@ -548,12 +626,30 @@ export async function updateDocument(
   const { data: existing, error: fetchError } = await supabase
     .from("documents")
     .select(
-      "id, cert_type, folder_id, expiry_date, status, reminded_at, notified_at, escalated_at",
+      "id, cert_type, folder_id, expiry_date, status, reminded_at, second_reminded_at, notified_at, escalated_at, reminder_days_before, second_reminder_days_before, escalation_days",
     )
     .eq("id", id)
     .single();
 
   if (fetchError || !existing) return { error: "Could not find that certificate." };
+
+  // An omitted field keeps what the certificate already uses. Checked before
+  // the vendor is resolved, because resolving can create a folder — and a
+  // rejected edit should not leave one behind.
+  const reminderDays = Math.round(
+    reminderRaw ?? existing.reminder_days_before,
+  );
+  const secondReminderDays = Math.round(
+    secondReminderRaw ?? existing.second_reminder_days_before,
+  );
+  const escalationDays = Math.round(
+    escalationRaw ?? existing.escalation_days,
+  );
+
+  const reminderProblem = checkReminderDays(reminderDays, secondReminderDays);
+  if (reminderProblem) return { error: reminderProblem };
+  if (!Number.isFinite(escalationDays) || escalationDays < 0)
+    return { error: "Escalation days must be a positive number." };
 
   const resolved = await resolveVendorFolder(
     supabase,
@@ -600,15 +696,37 @@ export async function updateDocument(
     new Date(existing.expiry_date).getTime() !== expiryDate.getTime();
   if (expiryChanged) changes.push(`expiry corrected to ${formatDate(expiryIso)}`);
 
+  // ---- Reminder schedule ----
+  // Reported as one change however many of the three moved: "reminders now
+  // 90d + 45d, escalating 14d after" is what the user just set, and three
+  // separate clauses for it would bury the vendor and expiry changes.
+  const scheduleChanged =
+    reminderDays !== existing.reminder_days_before ||
+    secondReminderDays !== existing.second_reminder_days_before ||
+    escalationDays !== existing.escalation_days;
+
+  if (scheduleChanged) {
+    const advance =
+      [reminderDays, secondReminderDays].filter((d) => d > 0).join("d + ") ||
+      "off";
+    changes.push(
+      `reminders now ${advance === "off" ? "off" : `${advance}d before expiry`}, escalating ${escalationDays}d after`,
+    );
+  }
+
   const { error: updateError } = await supabase
     .from("documents")
     .update({
       folder_id: folder.id,
       expiry_date: expiryIso,
+      reminder_days_before: reminderDays,
+      second_reminder_days_before: secondReminderDays,
+      escalation_days: escalationDays,
       ...(expiryChanged
         ? {
             status: "active",
             reminded_at: null,
+            second_reminded_at: null,
             notified_at: null,
             escalated_at: null,
           }
@@ -634,8 +752,12 @@ export async function updateDocument(
         .update({
           folder_id: existing.folder_id,
           expiry_date: existing.expiry_date,
+          reminder_days_before: existing.reminder_days_before,
+          second_reminder_days_before: existing.second_reminder_days_before,
+          escalation_days: existing.escalation_days,
           status: existing.status,
           reminded_at: existing.reminded_at,
+          second_reminded_at: existing.second_reminded_at,
           notified_at: existing.notified_at,
           escalated_at: existing.escalated_at,
         })
@@ -661,7 +783,12 @@ export async function updateDocument(
 // Delete
 // ---------------------------------------------------------------------------
 
-/** Delete a single retained (non-current) version and its stored file. */
+/**
+ * Delete a single non-current version and its stored file.
+ *
+ * New versions no longer leave one behind, so this reaches only history from
+ * before that change — and the RETAIN branch, if it is ever restored.
+ */
 export async function deleteVersion(formData: FormData): Promise<void> {
   const versionId = String(formData.get("version_id") ?? "");
   if (!versionId) return;

@@ -62,6 +62,7 @@ export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
   // submit them unchanged to keep that schedule, or edit them to retune it.
   // Written through refs rather than state so `form.reset()` still clears them.
   const reminderRef = useRef<HTMLInputElement>(null);
+  const secondReminderRef = useRef<HTMLInputElement>(null);
   const escalationRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -73,6 +74,8 @@ export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
     if (!doc) return;
     if (reminderRef.current)
       reminderRef.current.value = String(doc.reminder_days_before);
+    if (secondReminderRef.current)
+      secondReminderRef.current.value = String(doc.second_reminder_days_before);
     if (escalationRef.current)
       escalationRef.current.value = String(doc.escalation_days);
   }
@@ -94,12 +97,12 @@ export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
       <CardHeader>
         <CardTitle>Upload a new version</CardTitle>
         <CardDescription>
-          Renew a certificate by uploading its latest file. The new version
-          becomes the tracked one — <strong>only its expiry date is
-          monitored</strong>, even if you keep the older versions on file.
-          Reminders reset so they fire again against the new date, and the
-          reminder schedule below — prefilled from the certificate — can be
-          adjusted at the same time. {COMPRESSION_HINT}
+          Renew a certificate by uploading its latest file. The new file{" "}
+          <strong>replaces the one on file</strong>: it becomes the tracked
+          version, and the version it supersedes is deleted along with its
+          stored file. Reminders reset so they fire again against the new date,
+          and the reminder schedule below — prefilled from the certificate —
+          can be adjusted at the same time. {COMPRESSION_HINT}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -149,7 +152,7 @@ export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
 
             <div className="space-y-2">
               <Label htmlFor="version_reminder_days_before">
-                Remind me (days before expiry)
+                First reminder (days before expiry)
               </Label>
               <Input
                 id="version_reminder_days_before"
@@ -164,12 +167,32 @@ export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
                 id="version-reminder-hint"
                 className="text-xs text-muted-foreground"
               >
-                Heads-up to the marketing contact while it&apos;s still valid.
-                Set 0 to skip it.
+                Early heads-up to the marketing contact. Set 0 to skip it.
               </p>
             </div>
 
             <div className="space-y-2">
+              <Label htmlFor="version_second_reminder_days_before">
+                Second reminder (days before expiry)
+              </Label>
+              <Input
+                id="version_second_reminder_days_before"
+                name="second_reminder_days_before"
+                type="number"
+                min={0}
+                ref={secondReminderRef}
+                aria-describedby="version-second-reminder-hint"
+                required
+              />
+              <p
+                id="version-second-reminder-hint"
+                className="text-xs text-muted-foreground"
+              >
+                The follow-up — fewer days than the first. Set 0 to skip it.
+              </p>
+            </div>
+
+            <div className="space-y-2 sm:col-span-2">
               <Label htmlFor="version_escalation_days">
                 Escalate after (days past expiry)
               </Label>
@@ -180,6 +203,7 @@ export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
                 min={0}
                 ref={escalationRef}
                 aria-describedby="version-escalation-hint"
+                className="sm:max-w-[calc(50%-0.5rem)]"
                 required
               />
               <p
@@ -190,43 +214,58 @@ export function NewVersionForm({ documents }: { documents: CertDocument[] }) {
               </p>
             </div>
 
-            <fieldset className="space-y-2 sm:col-span-2">
-              <legend className="text-sm font-medium">
-                What should happen to the previous version?
-              </legend>
-              <label className="flex items-start gap-3 rounded-lg border p-3 text-sm">
-                <input
-                  type="radio"
-                  name="old_versions"
-                  value="retain"
-                  defaultChecked
-                  className="mt-0.5 accent-primary"
-                />
-                <span>
-                  <span className="font-medium">Retain it</span>
-                  <span className="block text-muted-foreground">
-                    Keep the old file in the certificate&apos;s history. Its
-                    expiry date is kept for reference only and is never
-                    reminded on.
+            {/*
+              RETAIN (removed): a radio group used to ask what should happen to
+              the previous version — "Retain it" (default) or "Delete it" — and
+              submitted it as `old_versions`. Replacing a certificate now always
+              deletes what it replaces, so the question had one honest answer.
+              Restoring the choice means bringing this fieldset back and
+              re-reading `old_versions` in `uploadNewVersion`.
+
+              <fieldset className="space-y-2 sm:col-span-2">
+                <legend className="text-sm font-medium">
+                  What should happen to the previous version?
+                </legend>
+                <label className="flex items-start gap-3 rounded-lg border p-3 text-sm">
+                  <input
+                    type="radio"
+                    name="old_versions"
+                    value="retain"
+                    defaultChecked
+                    className="mt-0.5 accent-primary"
+                  />
+                  <span>
+                    <span className="font-medium">Retain it</span>
+                    <span className="block text-muted-foreground">
+                      Keep the old file in the certificate&apos;s history. Its
+                      expiry date is kept for reference only and is never
+                      reminded on.
+                    </span>
                   </span>
-                </span>
-              </label>
-              <label className="flex items-start gap-3 rounded-lg border p-3 text-sm">
-                <input
-                  type="radio"
-                  name="old_versions"
-                  value="delete"
-                  className="mt-0.5 accent-primary"
-                />
-                <span>
-                  <span className="font-medium">Delete it</span>
-                  <span className="block text-muted-foreground">
-                    Permanently remove every earlier version and its stored
-                    file. This cannot be undone.
+                </label>
+                <label className="flex items-start gap-3 rounded-lg border p-3 text-sm">
+                  <input
+                    type="radio"
+                    name="old_versions"
+                    value="delete"
+                    className="mt-0.5 accent-primary"
+                  />
+                  <span>
+                    <span className="font-medium">Delete it</span>
+                    <span className="block text-muted-foreground">
+                      Permanently remove every earlier version and its stored
+                      file. This cannot be undone.
+                    </span>
                   </span>
-                </span>
-              </label>
-            </fieldset>
+                </label>
+              </fieldset>
+            */}
+
+            <p className="text-xs text-muted-foreground sm:col-span-2">
+              The file this replaces is deleted, along with its stored copy.
+              This cannot be undone — download it first if you need to keep a
+              copy.
+            </p>
           </div>
 
           {state?.error && (

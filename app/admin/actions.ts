@@ -14,6 +14,7 @@ import { runReminderJob } from "@/lib/reminders";
 import {
   DEFAULT_ESCALATION_DAYS,
   DEFAULT_REMINDER_DAYS_BEFORE,
+  DEFAULT_SECOND_REMINDER_DAYS_BEFORE,
   DOCUMENTS_BUCKET,
   MIN_PASSWORD_LENGTH,
 } from "@/lib/constants";
@@ -286,12 +287,13 @@ function sampleCert(): MailableCert {
   return {
     cert_type: "ISO 22000",
     pic_name: "Sample PIC",
-    // Far enough out that the Level 0 wording ("expires in N days") reads
-    // sensibly; Levels 1 and 2 describe the date rather than the gap.
+    // Far enough out that the advance-reminder wording ("expires in N days")
+    // reads sensibly; the later levels describe the date rather than the gap.
     expiry_date: new Date(Date.now() + 14 * 86_400_000).toISOString(),
     marketing_email: "marketing@benfoods.com",
     management_email: "director@benfoods.com",
     reminder_days_before: DEFAULT_REMINDER_DAYS_BEFORE,
+    second_reminder_days_before: DEFAULT_SECOND_REMINDER_DAYS_BEFORE,
     escalation_days: DEFAULT_ESCALATION_DAYS,
     folder: { code: "FL001", name: "Sample Vendor Pte Ltd" },
   };
@@ -314,9 +316,9 @@ async function resolveSample(
 }
 
 /**
- * Send a Level 0 advance reminder to an address of the admin's choosing.
- * Nothing in the database changes — no `reminded_at` is stamped, so the real
- * workflow is unaffected.
+ * Send one of the two advance reminders (Level 1 or Level 2) to an address of
+ * the admin's choosing. Nothing in the database changes — no timestamp is
+ * stamped, so the real workflow is unaffected.
  */
 export async function sendReminderTest(
   _prev: AdminState,
@@ -327,20 +329,25 @@ export async function sendReminderTest(
 
   const to = String(formData.get("to") ?? "").trim();
   const certId = String(formData.get("cert_id") ?? "");
+  const stage = formData.get("stage") === "second" ? "second" : "first";
 
   if (!EMAIL_RE.test(to))
     return { error: "Enter a valid email address to send the test to." };
 
   const cert = await resolveSample(session.supabase, certId);
 
-  const { error } = await sendUpcomingExpiryEmail(cert, { to, test: true });
+  const { error } = await sendUpcomingExpiryEmail(cert, {
+    to,
+    test: true,
+    stage,
+  });
   if (error) return { error: `The mail server rejected it: ${error.message}` };
 
-  return { success: `Advance reminder test sent to ${to}.` };
+  return { success: `${stage === "second" ? "Second" : "First"} reminder test sent to ${to}.` };
 }
 
 /**
- * Send a Level 1 expiry notification to an address of the admin's choosing.
+ * Send a Level 3 expiry notification to an address of the admin's choosing.
  * Nothing in the database changes — no status is advanced, so the real
  * workflow is unaffected.
  */
@@ -366,7 +373,7 @@ export async function sendExpiryTest(
 }
 
 /**
- * Send a Level 2 escalation to the address(es) the admin types in. Again, no
+ * Send a Level 4 escalation to the address(es) the admin types in. Again, no
  * certificate status is touched.
  */
 export async function sendEscalationTest(
@@ -414,8 +421,10 @@ export async function runRemindersNow(
   revalidatePath("/admin");
   revalidatePath("/dashboard");
 
+  const advance = result.remindedFirst + result.remindedSecond;
   const summary =
-    `${result.reminded} advance reminder${result.reminded === 1 ? "" : "s"}, ` +
+    `${advance} advance reminder${advance === 1 ? "" : "s"} ` +
+    `(${result.remindedFirst} first, ${result.remindedSecond} second), ` +
     `${result.notified} expiry notification${result.notified === 1 ? "" : "s"} and ` +
     `${result.escalated} escalation${result.escalated === 1 ? "" : "s"} sent.`;
 

@@ -42,6 +42,18 @@ export function formatDateTime(date: string | null | undefined) {
 }
 
 /**
+ * The calendar date as `YYYY-MM-DD`, in the company timezone.
+ *
+ * The shape a spreadsheet sorts and filters on, so it is what the CSV export
+ * writes — `formatDate`'s "24 Aug 2026" reads better but sorts as text.
+ */
+export function formatDateISO(date: string | null | undefined) {
+  if (!date) return "";
+  // en-CA renders as YYYY-MM-DD, which also reparses cleanly as a UTC day.
+  return new Date(date).toLocaleDateString("en-CA", { timeZone: APP_TIME_ZONE });
+}
+
+/**
  * Whole calendar days from today until `date` (negative = overdue).
  *
  * Counted in the company timezone to match `formatDate`. Mixing the two would let a row read
@@ -49,14 +61,35 @@ export function formatDateTime(date: string | null | undefined) {
  * countdown would be working from different calendars.
  */
 export function daysUntil(date: string) {
-  // en-CA renders as YYYY-MM-DD, which reparses cleanly as a UTC day boundary.
   const startOfDay = (d: Date) =>
-    Date.parse(
-      `${d.toLocaleDateString("en-CA", { timeZone: APP_TIME_ZONE })}T00:00:00Z`,
-    );
+    Date.parse(`${formatDateISO(d.toISOString())}T00:00:00Z`);
   return Math.round(
     (startOfDay(new Date(date)) - startOfDay(new Date())) / 86_400_000,
   );
+}
+
+/**
+ * Split a vendor search box into tokens, so "fresh life" matches "Fresh Life
+ * Pte Ltd" and "FL001 fresh" matches too.
+ */
+export function vendorQueryTokens(query: string) {
+  return query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+/**
+ * Does a certificate's vendor code or name match every token?
+ *
+ * Shared by the dashboard list and the CSV export, so the file that downloads
+ * is exactly the list on screen rather than something that drifted from it.
+ */
+export function matchesVendorQuery(
+  doc: { folder?: { code: string; name: string } | null },
+  tokens: string[],
+) {
+  if (tokens.length === 0) return true;
+  const haystack =
+    `${doc.folder?.code ?? ""} ${doc.folder?.name ?? ""}`.toLowerCase();
+  return tokens.every((t) => haystack.includes(t));
 }
 
 /**

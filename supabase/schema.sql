@@ -97,13 +97,17 @@ create table public.documents (
   file_size        bigint not null,
   expiry_date      timestamptz not null, -- ALWAYS the current version's expiry,
                                          -- stored as 00:00 Asia/Singapore
-  marketing_email  text not null,        -- Level 0 + Level 1 contact
-  management_email text not null,        -- Level 2 (escalation) contact
-  -- Days before expiry for the advance reminder. 0 disables it.
-  reminder_days_before integer not null default 30 check (reminder_days_before >= 0),
+  marketing_email  text not null,        -- Levels 1-3 contact
+  management_email text not null,        -- Level 4 (escalation) contact
+  -- Days before expiry for the two advance reminders. 0 disables either one.
+  -- The second is the nearer of the two, so it is normally the smaller number.
+  reminder_days_before integer not null default 60 check (reminder_days_before >= 0),
+  second_reminder_days_before integer not null default 30
+    check (second_reminder_days_before >= 0),
   escalation_days  integer not null default 7 check (escalation_days >= 0),
   status           document_status not null default 'active',
-  reminded_at      timestamptz,          -- Level 0 sent (certificate stays 'active')
+  reminded_at      timestamptz,          -- Level 1 sent (certificate stays 'active')
+  second_reminded_at timestamptz,        -- Level 2 sent (certificate stays 'active')
   notified_at      timestamptz,
   escalated_at     timestamptz,
   created_at       timestamptz not null default now()
@@ -120,7 +124,13 @@ create index documents_cert_type_idx on public.documents (cert_type);
 -- ---------------------------------------------------------------------------
 -- Exactly one row per certificate carries `is_current`. That row's expiry_date
 -- is mirrored onto documents.expiry_date and is the ONLY one the reminder job
--- looks at: retained older versions are history, never tracked for expiry.
+-- looks at: older versions are history, never tracked for expiry.
+--
+-- Uploading a new version now deletes the version it replaces, so in practice a
+-- certificate carries one row here. The table stays as it is: it still records
+-- who uploaded the current file and when, it still holds the history of
+-- certificates uploaded before that change, and keeping older versions is a
+-- switch away (see `uploadNewVersion` in app/dashboard/actions.ts).
 create table public.document_versions (
   id               uuid primary key default gen_random_uuid(),
   document_id      uuid not null references public.documents (id) on delete cascade,

@@ -143,10 +143,11 @@ export type MailableCert = Pick<
   | "marketing_email"
   | "management_email"
   | "reminder_days_before"
+  | "second_reminder_days_before"
   | "escalation_days"
 > & { folder?: { code: string; name: string } | null };
 
-/** Options shared by both levels. `to` overrides the stored recipient (admin tests). */
+/** Options shared by every level. `to` overrides the stored recipient (admin tests). */
 type SendOptions = { to?: string; test?: boolean };
 
 /** The logo is served from this app's own /public, so it needs an absolute URL. */
@@ -204,39 +205,59 @@ function details(cert: MailableCert) {
     .join("")}</table>`;
 }
 
+/** Which of the two advance reminders is being sent. */
+export type ReminderStage = "first" | "second";
+
 /**
- * Level 0: the certificate is approaching its expiry date. Sent
- * `reminder_days_before` days ahead so there is time to arrange a renewal —
- * this is the only one of the three that arrives while the certificate is
- * still valid.
+ * Levels 1 and 2: the certificate is approaching its expiry date. Sent
+ * `reminder_days_before` and then `second_reminder_days_before` days ahead so
+ * there is time to arrange a renewal — these are the only two of the four that
+ * arrive while the certificate is still valid.
+ *
+ * The two differ in tone rather than in content. The first opens the renewal;
+ * the second says the same thing with less runway left, and says so, or a
+ * second identical email reads as the system stuttering.
  */
 export async function sendUpcomingExpiryEmail(
   cert: MailableCert,
-  opts: SendOptions = {},
+  opts: SendOptions & { stage?: ReminderStage } = {},
 ) {
   const label = certLabel(cert);
   const days = daysUntil(cert.expiry_date);
   const when =
     days > 1 ? `in ${days} days` : days === 1 ? "tomorrow" : "today";
 
+  const second = opts.stage === "second";
   const routed = route(opts.to || cert.marketing_email);
+
+  // What happens next, from where this reminder sits in the sequence. The first
+  // reminder points at the second — unless the second is switched off for this
+  // certificate, in which case the expiry-day notice is what follows.
+  const nextUp =
+    !second && cert.second_reminder_days_before > 0
+      ? `You will be reminded again <strong style="color:${C.ink}">${cert.second_reminder_days_before} day(s)</strong> before expiry, and again on the day.`
+      : "You will be reminded again on the day it expires.";
 
   return deliver({
     to: routed.to,
-    subject: `${opts.test ? "[TEST] " : ""}${routed.subjectPrefix}\u23f0 Expiring ${when}: ${label}`,
+    subject: `${opts.test ? "[TEST] " : ""}${routed.subjectPrefix}\u23f0 ${second ? "Reminder — expiring" : "Expiring"} ${when}: ${label}`,
     html: shell(
-      `A certificate expires ${when}`,
+      second ? `Reminder: a certificate expires ${when}` : `A certificate expires ${when}`,
       C.brand,
-      `<p style="margin:0;color:${C.muted}">This certificate is still valid, but it is due for renewal.</p>
+      `<p style="margin:0;color:${C.muted}">${
+        second
+          ? "This is the second reminder for this certificate. It is still valid, but not for much longer."
+          : "This certificate is still valid, but it is due for renewal."
+      }</p>
        ${details(cert)}
-       <p style="margin:0;color:${C.muted}">Please arrange the renewal and upload the new version before it expires. You will be reminded again on the day, and senior management is notified <strong style="color:${C.ink}">${cert.escalation_days} day(s)</strong> after that if it is still outstanding.</p>`,
+       <p style="margin:0;color:${C.muted}">Please arrange the renewal and upload the new version before it expires. ${nextUp} Senior management is notified <strong style="color:${C.ink}">${cert.escalation_days} day(s)</strong> after expiry if it is still outstanding.</p>`,
       opts.test,
       routed.notice,
     ),
   });
 }
 
-/** Level 1: certificate has reached its expiry date. Notify the marketing contact. */
+/** Level 3: certificate has reached its expiry date. Notify the marketing contact. */
 export async function sendExpiryEmail(cert: MailableCert, opts: SendOptions = {}) {
   const label = certLabel(cert);
   const routed = route(opts.to || cert.marketing_email);
@@ -256,7 +277,7 @@ export async function sendExpiryEmail(cert: MailableCert, opts: SendOptions = {}
   });
 }
 
-/** Level 2: still not renewed after the grace period. Escalate to management. */
+/** Level 4: still not renewed after the grace period. Escalate to management. */
 export async function sendEscalationEmail(
   cert: MailableCert,
   opts: SendOptions & { cc?: string | null } = {},

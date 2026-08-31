@@ -24,6 +24,7 @@ import {
   ACCEPTED_FILE_EXTENSIONS,
   DEFAULT_ESCALATION_DAYS,
   DEFAULT_REMINDER_DAYS_BEFORE,
+  DEFAULT_SECOND_REMINDER_DAYS_BEFORE,
   MAX_UPLOAD_INPUT_SIZE,
   MAX_UPLOAD_INPUT_SIZE_LABEL,
 } from "@/lib/constants";
@@ -119,7 +120,11 @@ export function UploadForm({
           Certificates are filed under a vendor / customer folder. Type a new
           code to create the folder, or pick one already in use. Free-text
           fields offer what has been entered before — you can always type
-          something new. {COMPRESSION_HINT}
+          something new. The reminder schedule below is prefilled with the
+          standard{" "}
+          {`${DEFAULT_REMINDER_DAYS_BEFORE}/${DEFAULT_SECOND_REMINDER_DAYS_BEFORE}`}-day
+          warnings and a {DEFAULT_ESCALATION_DAYS}-day escalation; change any of
+          them if this certificate needs a different run-up. {COMPRESSION_HINT}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -224,7 +229,7 @@ export function UploadForm({
 
             <div className="space-y-2">
               <Label htmlFor="reminder_days_before">
-                Remind me (days before expiry)
+                First reminder (days before expiry)
               </Label>
               <Input
                 id="reminder_days_before"
@@ -236,12 +241,34 @@ export function UploadForm({
                 required
               />
               <p id="reminder-hint" className="text-xs text-muted-foreground">
-                Heads-up to the marketing contact while it&apos;s still valid.
-                Set 0 to skip it.
+                Early heads-up to the marketing contact, while there is still
+                time to start the renewal. Set 0 to skip it.
               </p>
             </div>
 
             <div className="space-y-2">
+              <Label htmlFor="second_reminder_days_before">
+                Second reminder (days before expiry)
+              </Label>
+              <Input
+                id="second_reminder_days_before"
+                name="second_reminder_days_before"
+                type="number"
+                min={0}
+                defaultValue={DEFAULT_SECOND_REMINDER_DAYS_BEFORE}
+                aria-describedby="second-reminder-hint"
+                required
+              />
+              <p
+                id="second-reminder-hint"
+                className="text-xs text-muted-foreground"
+              >
+                The follow-up, closer to expiry — so fewer days than the first.
+                Set 0 to skip it.
+              </p>
+            </div>
+
+            <div className="space-y-2 sm:col-span-2">
               <Label htmlFor="escalation_days">
                 Escalate after (days past expiry)
               </Label>
@@ -252,6 +279,7 @@ export function UploadForm({
                 min={0}
                 defaultValue={DEFAULT_ESCALATION_DAYS}
                 aria-describedby="escalation-hint"
+                className="sm:max-w-[calc(50%-0.5rem)]"
                 required
               />
               <p id="escalation-hint" className="text-xs text-muted-foreground">

@@ -7,33 +7,41 @@ import {
 import type { CertDocument } from "@/lib/types";
 
 export type ReminderResult = {
-  reminded: number;
+  /** Level 1 — the early advance reminder. */
+  remindedFirst: number;
+  /** Level 2 — the nearer advance reminder. */
+  remindedSecond: number;
   notified: number;
   escalated: number;
   errors: string[];
 };
 
 /**
- * The three-level reminder workflow:
+ * The four-level reminder workflow:
  *
- *   Level 0  now >= expiry_date - reminder_days_before && still valid
+ *   Level 1  now >= expiry_date - reminder_days_before && still valid
  *            && reminded_at is null
  *            -> email the marketing contact, stamp reminded_at
  *
- *   Level 1  expiry_date <= now && status = 'active'
+ *   Level 2  now >= expiry_date - second_reminder_days_before && still valid
+ *            && second_reminded_at is null
+ *            -> email the marketing contact, stamp second_reminded_at
+ *
+ *   Level 3  expiry_date <= now && status = 'active'
  *            -> email the marketing contact, set status = 'notified'
  *
- *   Level 2  now >= expiry_date + escalation_days && status = 'notified'
+ *   Level 4  now >= expiry_date + escalation_days && status = 'notified'
  *            -> email senior management (cc marketing), set status = 'escalated'
  *
- * Level 0 does not advance `status`, because it is orthogonal to the
- * expire/escalate handover: a certificate stays 'active' after the advance
- * reminder so Level 1 still fires on the day. `reminded_at` keeps it from
+ * Neither advance reminder advances `status`, because both are orthogonal to
+ * the expire/escalate handover: a certificate stays 'active' after being
+ * reminded so Level 3 still fires on the day. The two timestamps keep them from
  * repeating.
  *
- * `documents.expiry_date` always mirrors the CURRENT version's expiry, so a
- * retained older version is never reminded on. Uploading a new version resets
- * the status to 'active', which re-arms the workflow against the new date.
+ * `documents.expiry_date` always mirrors the CURRENT version's expiry, so an
+ * older version left on file from before versions were auto-deleted is never
+ * reminded on. Uploading a new version resets the status to 'active' and clears
+ * all four markers, which re-arms the workflow against the new date.
  *
  * Status transitions make this idempotent: an already-notified or
  * already-escalated certificate is never emailed twice, so the job is safe to
@@ -46,46 +54,58 @@ export async function runReminderJob(): Promise<ReminderResult> {
   const now = new Date().toISOString(); // full timestamp — expiry_date is timestamptz
 
   const result: ReminderResult = {
-    reminded: 0,
+    remindedFirst: 0,
+    remindedSecond: 0,
     notified: 0,
     escalated: 0,
     errors: [],
   };
 
-  // ---- Level 0: approaching expiry, still valid, not yet reminded ----
-  // The cutoff is per-row (expiry_date - reminder_days_before), which PostgREST
-  // can't express as a filter, so narrow it here and compare in JS — the same
-  // shape as the Level 2 pass below.
+  // ---- Levels 1 and 2: approaching expiry, still valid, not yet reminded ----
+  // Each cutoff is per-row (expiry_date - its own lead time), which PostgREST
+  // can't express as a filter, so narrow to "still valid" here and compare in
+  // JS — the same shape as the escalation pass below.
   const { data: upcoming, error: uErr } = await supabase
     .from("documents")
     .select("*, folder:folders(code, name)")
     .eq("status", "active")
-    .is("reminded_at", null)
-    .gt("expiry_date", now)
-    .gt("reminder_days_before", 0);
+    .gt("expiry_date", now);
 
   if (uErr) result.errors.push(`query upcoming: ${uErr.message}`);
 
   for (const doc of (upcoming ?? []) as CertDocument[]) {
-    const dueMs =
-      new Date(doc.expiry_date).getTime() -
-      doc.reminder_days_before * 86_400_000;
-    if (Date.now() < dueMs) continue;
+    const expiryMs = new Date(doc.expiry_date).getTime();
+    const due = (days: number, sentAt: string | null) =>
+      days > 0 && !sentAt && Date.now() >= expiryMs - days * 86_400_000;
+
+    const firstDue = due(doc.reminder_days_before, doc.reminded_at);
+    const secondDue = due(doc.second_reminder_days_before, doc.second_reminded_at);
+    if (!firstDue && !secondDue) continue;
+
+    // At most one advance reminder per certificate per run, and it is the
+    // nearest one that is due. Both windows are open at once whenever a
+    // certificate is filed late — inside its own lead times — or when the job
+    // misses a day, and two near-identical emails in one morning read as a bug.
+    // The earlier level is stamped as sent along with it: its moment has
+    // passed, and sending it tomorrow would say less than what just went out.
+    const stage = secondDue ? "second" : "first";
+    const stamp = new Date().toISOString();
+    const stamps = secondDue
+      ? { second_reminded_at: stamp, ...(firstDue ? { reminded_at: stamp } : {}) }
+      : { reminded_at: stamp };
 
     try {
-      const { error } = await sendUpcomingExpiryEmail(doc);
+      const { error } = await sendUpcomingExpiryEmail(doc, { stage });
       if (error) throw new Error(error.message);
-      await supabase
-        .from("documents")
-        .update({ reminded_at: new Date().toISOString() })
-        .eq("id", doc.id);
-      result.reminded++;
+      await supabase.from("documents").update(stamps).eq("id", doc.id);
+      if (secondDue) result.remindedSecond++;
+      else result.remindedFirst++;
     } catch (e) {
       result.errors.push(`remind ${doc.id}: ${(e as Error).message}`);
     }
   }
 
-  // ---- Level 1: newly expired, not yet notified ----
+  // ---- Level 3: newly expired, not yet notified ----
   const { data: toNotify, error: notifyErr } = await supabase
     .from("documents")
     .select("*, folder:folders(code, name)")
@@ -108,7 +128,7 @@ export async function runReminderJob(): Promise<ReminderResult> {
     }
   }
 
-  // ---- Level 2: notified, grace period elapsed, still not renewed ----
+  // ---- Level 4: notified, grace period elapsed, still not renewed ----
   const { data: notified, error: escErr } = await supabase
     .from("documents")
     .select("*, folder:folders(code, name)")

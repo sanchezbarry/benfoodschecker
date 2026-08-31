@@ -53,8 +53,17 @@ export const APP_UTC_OFFSET = "+08:00";
 /** Shortest password accepted, both in the admin console and by self-service. */
 export const MIN_PASSWORD_LENGTH = 8;
 
-/** Default days before expiry for the advance reminder. 0 disables it. */
-export const DEFAULT_REMINDER_DAYS_BEFORE = 30;
+/**
+ * Default lead times for the two advance reminders, in days before expiry.
+ * Either can be set to 0 on a certificate to switch that reminder off.
+ *
+ * Two rather than one: a single heads-up is easy to miss, and a renewal that
+ * needs the vendor to re-audit needs longer than a month. The first lands far
+ * enough out to start the process, the second while there is still time to
+ * chase it.
+ */
+export const DEFAULT_REMINDER_DAYS_BEFORE = 60;
+export const DEFAULT_SECOND_REMINDER_DAYS_BEFORE = 30;
 
 /**
  * Public URL of the deployed app, used for the button in every reminder email.

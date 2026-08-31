@@ -124,12 +124,16 @@ export function TestsPanel({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* ---- Level 0 ---- */}
+        {/* ---- Levels 1 & 2 ---- */}
+        {/*
+          One form for both advance reminders rather than two near-identical
+          ones: they differ only in which stage the email announces itself as.
+        */}
         <form action={reminderAction} className="space-y-4 rounded-lg border p-4">
           <div className="flex items-center gap-2">
             <BellRing className="size-4 text-primary" />
             <h3 className="text-sm font-semibold">
-              Level 0 — advance reminder, before expiry
+              Levels 1 &amp; 2 — advance reminders, before expiry
             </h3>
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -144,18 +148,27 @@ export function TestsPanel({
                 required
               />
             </div>
-            <CertPicker id="reminder_test_cert" certificates={certificates} />
+            <div className="space-y-2">
+              <Label htmlFor="reminder_test_stage">Which reminder</Label>
+              <Select id="reminder_test_stage" name="stage" defaultValue="first">
+                <option value="first">Level 1 — first reminder</option>
+                <option value="second">Level 2 — second reminder</option>
+              </Select>
+            </div>
+            <div className="sm:col-span-2">
+              <CertPicker id="reminder_test_cert" certificates={certificates} />
+            </div>
           </div>
           <Feedback state={reminderState} />
           <Pending idle={<><BellRing />Send reminder test</>} busy="Sending…" />
         </form>
 
-        {/* ---- Level 1 ---- */}
+        {/* ---- Level 3 ---- */}
         <form action={expiryAction} className="space-y-4 rounded-lg border p-4">
           <div className="flex items-center gap-2">
             <Send className="size-4 text-warning" />
             <h3 className="text-sm font-semibold">
-              Level 1 — expiry notification
+              Level 3 — expiry notification
             </h3>
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -176,14 +189,14 @@ export function TestsPanel({
           <Pending idle={<><Send />Send expiry test</>} busy="Sending…" />
         </form>
 
-        {/* ---- Level 2 ---- */}
+        {/* ---- Level 4 ---- */}
         <form
           action={escalationAction}
           className="space-y-4 rounded-lg border p-4"
         >
           <div className="flex items-center gap-2">
             <Siren className="size-4 text-destructive" />
-            <h3 className="text-sm font-semibold">Level 2 — escalation</h3>
+            <h3 className="text-sm font-semibold">Level 4 — escalation</h3>
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">

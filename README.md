@@ -7,8 +7,9 @@ escalating email reminders**.
   creates every account.
 - **Folders** — each certificate is filed under a **vendor / customer** folder
   (code + name, e.g. `FL001 — Fresh Life Pte Ltd`)
-- **Versions** — upload a new version of a certificate and choose to **retain**
-  or **delete** the old one. Only the newest version's expiry date is tracked.
+- **Versions** — upload a new version of a certificate and it **replaces** the
+  file it supersedes, which is deleted. Only the newest version's expiry date is
+  tracked.
 - **Edit** — fix the vendor code, vendor name or expiry date typed at upload,
   without deleting the certificate and losing its history. Admins can do it on
   anyone's behalf.
@@ -17,13 +18,19 @@ escalating email reminders**.
   PDF/PNG/JPG/WEBP and capped at **25 MB** once stored
 - **Compression** — photos and large scanned PDFs are re-rendered in the browser
   before upload, typically shedding 70–90% of the bytes
-- **Three-level reminders**
-  0. **N days before expiry**, while the certificate is still valid → email the
-     **marketing contact**
-  1. **On expiry** → email the **marketing contact**
-  2. **N days later**, if the certificate still hasn't been renewed → escalate to
-     **senior management**
-- **Admin console** — manage users, passwords, and folders; fire either reminder
+- **CSV export** — download the register (vendors, PICs, certificate types,
+  expiry dates and more) as a spreadsheet, scoped by the same RLS as the list
+- **Four-level reminders**
+  1. **60 days before expiry** (default), while the certificate is still valid →
+     email the **marketing contact**
+  2. **30 days before expiry** (default) → email the **marketing contact** again
+  3. **On expiry** → email the **marketing contact**
+  4. **7 days later** (default), if the certificate still hasn't been renewed →
+     escalate to **senior management**
+
+  Every lead time is prefilled with the default above and editable per
+  certificate; 0 switches either advance reminder off.
+- **Admin console** — manage users, passwords, and folders; fire any reminder
   level on demand
 - **Email** — [Resend](https://resend.com), or any SMTP mailbox
 - **Scheduling** — a secret-protected cron endpoint, driven by **Vercel Cron** or
@@ -86,9 +93,10 @@ Browser ──► Next.js (App Router)
              │     └─ Server Actions ──► Supabase Postgres + Storage
              ├─ /admin            users · folders · notification tests
              │     └─ Server Actions ──► Supabase Auth Admin API + Postgres
+             ├─ /api/export/certificates   CSV of the register (RLS-scoped)
              └─ /api/cron/check-expiries   ◄── Vercel Cron or pg_cron (daily)
                      │  service-role client → lib/reminders.ts
-                     └─ Resend → marketing (L1) / management (L2) emails
+                     └─ Resend → marketing (L1-L3) / management (L4) emails
 ```
 
 The reminder logic lives in [`lib/reminders.ts`](lib/reminders.ts) so the cron
@@ -101,11 +109,13 @@ code.
 | --- | --- |
 | `folders` | one row per vendor / customer — `code` (unique, case-insensitive) + `name` |
 | `documents` | one row per certificate; its file and `expiry_date` **mirror the current version** |
-| `document_versions` | every upload for a certificate; exactly one row is `is_current` |
+| `document_versions` | every upload for a certificate; exactly one row is `is_current` (a new version deletes the one it replaces, so this is normally a single row plus history from before that change) |
 
-Reminder state lives in `documents.status` (`active → notified → escalated`).
-Because each email is tied to a status transition, the job is **idempotent** —
-running it repeatedly never double-sends. Uploading a new version resets the
+Reminder state lives in `documents.status` (`active → notified → escalated`)
+plus two nullable timestamps, `reminded_at` and `second_reminded_at`, for the
+two advance reminders. Because each email is tied to a status transition or to
+stamping one of those timestamps, the job is **idempotent** — running it
+repeatedly never double-sends. Uploading a new version resets the
 status to `active`, which re-arms the workflow against the new expiry date — and
 so does correcting the expiry from the **Edit** panel.
 
@@ -165,7 +175,8 @@ themselves — that would lock them out on the next page load.
      (folders + versioning); `003` raises the bucket size limit; `004` adds the
      `department` role; `005` adds the advance reminder; `006` pins every stored
      expiry to Singapore midnight; `007` lets a user rename a vendor folder that
-     holds only their own certificates. `002` specifically applies to a v1
+     holds only their own certificates; `008` adds the second advance reminder
+     and moves the first to 60 days. `002` specifically applies to a v1
      database (a
      `documents` table with a `name` column and no folders).
      It backfills every existing certificate into an `UNSORTED` folder, turns its
@@ -313,6 +324,26 @@ The certificate list is grouped by vendor folder with a **search box** that
 filters on vendor code or name. The query is tokenised, so "fresh life" matches
 "Fresh Life Pte Ltd" and "FL001 fresh" matches too.
 
+**Export CSV** downloads the register as a spreadsheet — vendor code and name,
+PIC, certificate type, expiry, days to expiry, status, both contacts, the
+reminder schedule and the upload date, one row per certificate, ordered by
+expiry. It is a plain link to
+[`app/api/export/certificates/route.ts`](app/api/export/certificates/route.ts),
+so the browser downloads it directly and it works with JavaScript off.
+
+Who gets which rows is **RLS, not a check in the route**: the query runs on the
+caller's own session client, so a standard user's file holds their own
+certificates and an admin's or department account's holds everybody's — the
+same rows the dashboard shows them. Searching first narrows the download too:
+the search box's text travels as `?q=`, and the server re-runs the same matcher
+the list uses, so nothing the browser is holding decides what lands in the file.
+
+Three details the file depends on: it opens with a UTF-8 BOM (without it Excel
+on Windows mangles non-ASCII vendor names), rows end with CRLF per RFC 4180, and
+any cell starting `=`, `+`, `-` or `@` is prefixed with an apostrophe so a
+certificate type someone typed as `=ISO 22000` cannot execute as a formula on
+whoever opens the report — while a negative "days to expiry" stays a number.
+
 Everyone, including view-only department accounts, can **change their own
 password** from the bottom of the dashboard. The current password is required —
 Supabase would otherwise let a live session set a new one without it, which
@@ -327,8 +358,9 @@ would let anyone who found a signed-in browser lock the real owner out.
 | PIC | read-only, taken from your account's name |
 | Certificate type | free text with a dropdown of types already in use (`SUPPLIER FORM`, `ISO 22000`, …) |
 | Expiry date | whole days — stored as 00:00 Singapore time; the reminder job watches this |
-| Remind me (days before expiry) | Level 0 heads-up while the certificate is still valid; 0 disables it |
-| File, contacts, escalation window | PDF/image, the two email recipients, and the grace period |
+| First reminder (days before expiry) | Level 1 heads-up while the certificate is still valid — prefilled 60; 0 disables it |
+| Second reminder (days before expiry) | Level 2 follow-up, nearer the date — prefilled 30, and must be fewer days than the first; 0 disables it |
+| File, contacts, escalation window | PDF/image, the two email recipients, and the grace period (prefilled 7 days) |
 
 Typing a code that already exists files the certificate into that folder and
 keeps the folder's stored name. Filing never renames a vendor: a name typed
@@ -339,8 +371,8 @@ everybody else's certificates. Renaming is a deliberate act, so it lives in
 ### Editing a certificate (`/dashboard`)
 
 Every certificate row has an **Edit** panel for correcting what was typed when
-it was filed — vendor code, vendor name and expiry date — so a mistake no longer
-means deleting the certificate and losing its version history. Owners edit their
+it was filed — vendor code, vendor name, expiry date and the reminder schedule —
+so a mistake no longer means deleting the certificate and losing its history. Owners edit their
 own; admins edit anyone's, from the same list. Department accounts see no Edit
 button, and the Server Action refuses them anyway.
 
@@ -349,6 +381,7 @@ button, and the Server Action refuses them anyway.
 | Vendor / customer code | decides which folder the certificate is filed under — an existing code **moves** it there, a new code creates the folder |
 | Vendor / customer name | **renames** the vendor, if the folder holds none of anyone else's certificates; otherwise the stored name stands and the reply says so |
 | Expiry date | written to the certificate **and** to its current version, which the certificate mirrors |
+| First / second reminder, escalation window | retunes the schedule without waiting for the next renewal. Changing a lead time never un-sends: a reminder already sent stays sent, and one still pending fires against the new window |
 
 The file, the PIC and the owner are deliberately out of scope: replacing the
 file is what a new version is for, and an admin editing on someone's behalf
@@ -365,8 +398,8 @@ policy expression is part of the query it guards, so a plain sub-select on
 certificates would be invisible, and one certificate in a shared folder would be
 enough to rename it for everybody.
 
-Changing the expiry re-arms all three reminder levels (`status` back to
-`active`, the three timestamps cleared), so a certificate that was chased — or
+Changing the expiry re-arms all four reminder levels (`status` back to
+`active`, the four timestamps cleared), so a certificate that was chased — or
 escalated — against the wrong day is reconsidered against the right one. An
 unchanged date leaves reminder state alone, so fixing a vendor typo never
 re-sends an email.
@@ -374,14 +407,21 @@ re-sends an email.
 ### New versions
 
 **Upload a new version** takes the certificate, the new file, its new expiry, and
-what to do with the previous version:
+the reminder schedule — prefilled from the certificate, so submitting it
+unchanged keeps the schedule it already had.
 
-- **Retain it** — the old file stays in the certificate's history. Its expiry is
-  kept for reference and is **never** reminded on.
-- **Delete it** — every earlier version and its stored file are removed.
+The new version becomes the tracked one: its expiry is mirrored onto the
+certificate and reminder state resets to `active`. **The version it replaces is
+deleted**, row and stored file both, once the new one is safely in place.
 
-Either way, the new version becomes the tracked one: its expiry is mirrored onto
-the certificate and reminder state resets to `active`.
+Keeping the old file used to be a per-upload choice ("retain" or "delete"). It
+is now the single behaviour: a renewed certificate supersedes its predecessor
+outright, and the retained copies only accumulated storage. The code for the
+choice is commented out rather than deleted — search for `RETAIN (removed)` in
+[`app/dashboard/actions.ts`](app/dashboard/actions.ts) and
+[`app/dashboard/new-version-form.tsx`](app/dashboard/new-version-form.tsx) —
+and nothing was dropped from the schema, so versions uploaded before the change
+are still on file and still listed under a certificate's version history.
 
 ### Admin console (`/admin`)
 
@@ -392,8 +432,9 @@ the certificate and reminder state resets to `active`.
   holds certificates can't be deleted; refile or delete them first. Admins are
   the only ones who can rename a folder shared between several people's
   certificates, or delete an empty one.
-- **Notification tests** — send a Level 0, Level 1 or Level 2 email to any
-  address you type in (escalation takes a "to" and an optional "cc"). Test emails
+- **Notification tests** — send any level's email to any address you type in
+  (the advance-reminder form picks Level 1 or Level 2; escalation takes a "to"
+  and an optional "cc"). Test emails
   are badged as tests and change nothing in the database. A separate **Run
   reminder job** button runs the real daily job early — that one does email real
   contacts and advance statuses.
@@ -411,7 +452,7 @@ protected by `CRON_SECRET` (sent as `Authorization: Bearer <secret>` or
 ```bash
 curl -H "Authorization: Bearer $CRON_SECRET" \
   http://localhost:3000/api/cron/check-expiries
-# → {"ok":true,"notified":1,"escalated":0,"errors":[]}
+# → {"ok":true,"remindedFirst":2,"remindedSecond":1,"notified":1,"escalated":0,"errors":[]}
 ```
 
 **Option A — Vercel Cron (recommended if deploying to Vercel).**
@@ -429,24 +470,33 @@ Uncomment and edit the final block in [`supabase/schema.sql`](supabase/schema.sq
 
 ---
 
-## How the three levels work
+## How the four levels work
 
 | # | Trigger condition | Action | State change |
 | --- | --- | --- | --- |
-| 0 | `now >= expiry_date - reminder_days_before`, still valid, `reminded_at` null | email **marketing contact** | stamps `reminded_at` |
-| 1 | `expiry_date <= now` and status `active` | email **marketing contact** | status → `notified` |
-| 2 | `now >= expiry_date + escalation_days` and status `notified` | email **senior management** (cc marketing) | status → `escalated` |
+| 1 | `now >= expiry_date - reminder_days_before`, still valid, `reminded_at` null | email **marketing contact** | stamps `reminded_at` |
+| 2 | `now >= expiry_date - second_reminder_days_before`, still valid, `second_reminded_at` null | email **marketing contact** | stamps `second_reminded_at` |
+| 3 | `expiry_date <= now` and status `active` | email **marketing contact** | status → `notified` |
+| 4 | `now >= expiry_date + escalation_days` and status `notified` | email **senior management** (cc marketing) | status → `escalated` |
 
-Level 0 deliberately does **not** advance `status`. The status enum drives the
-expire/escalate handover, and the advance reminder is orthogonal to it — a
-certificate stays `active` after being reminded so Level 1 still fires on the
-day. A nullable `reminded_at` keeps the job idempotent without disturbing that.
-Setting `reminder_days_before` to 0 disables Level 0 for that certificate; the
-other two still fire.
+Levels 1 and 2 deliberately do **not** advance `status`. The status enum drives
+the expire/escalate handover, and the advance reminders are orthogonal to it — a
+certificate stays `active` after being reminded so Level 3 still fires on the
+day. The two nullable timestamps keep the job idempotent without disturbing
+that. Setting either lead time to 0 disables that reminder for that certificate;
+every other level still fires.
 
-`expiry_date` is always the current version's, so retaining old versions never
-triggers stale reminders. Uploading a new version clears all three markers, so
-the advance reminder fires again against the new date.
+**At most one advance reminder per certificate per run**, and it is the nearest
+one that is due. Both windows are open at once whenever a certificate is filed
+late — inside its own lead times — or when the job misses a day, and two
+near-identical emails in one morning read as a bug. When Level 2 goes out with
+Level 1 still unsent, Level 1 is stamped alongside it: its moment has passed,
+and sending it the next day would say less than what just went out.
+
+`expiry_date` is always the current version's, so an older file left over from
+before versions were auto-deleted never triggers stale reminders. Uploading a
+new version clears all four markers, so both advance reminders fire again
+against the new date.
 
 ## Security notes
 

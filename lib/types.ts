@@ -17,8 +17,9 @@ export interface FolderWithCount extends Folder {
 }
 
 /**
- * One uploaded file for a certificate. A certificate can retain any number of
- * old versions, but only the `is_current` one has its expiry date tracked.
+ * One uploaded file for a certificate. Only the `is_current` one has its expiry
+ * date tracked; uploading a new version deletes the one it replaces, so rows
+ * that are not current are history from before that change.
  */
 export interface DocumentVersion {
   id: string;
@@ -50,12 +51,16 @@ export interface CertDocument {
   expiry_date: string; // ISO timestamptz — 00:00 local on the expiry date
   marketing_email: string;
   management_email: string;
-  /** Days before expiry for the advance reminder. 0 disables it. */
+  /** Days before expiry for the first advance reminder. 0 disables it. */
   reminder_days_before: number;
+  /** Days before expiry for the second, nearer advance reminder. 0 disables it. */
+  second_reminder_days_before: number;
   escalation_days: number;
   status: DocumentStatus;
-  /** Level 0 sent. The certificate stays `active`, so Level 1 still fires. */
+  /** Level 1 sent. The certificate stays `active`, so the later levels still fire. */
   reminded_at: string | null;
+  /** Level 2 sent. Also leaves `status` alone. */
+  second_reminded_at: string | null;
   notified_at: string | null;
   escalated_at: string | null;
   created_at: string;

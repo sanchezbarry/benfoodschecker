@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   BellRing,
   Download,
+  FileDown,
   FileText,
   Folder as FolderIcon,
   History,
@@ -31,7 +32,14 @@ import {
   type ActionState,
 } from "./actions";
 import type { CertDocument, DocumentVersion, Suggestions } from "@/lib/types";
-import { daysUntil, formatBytes, formatDate, formatDateTime } from "@/lib/utils";
+import {
+  daysUntil,
+  formatBytes,
+  formatDate,
+  formatDateTime,
+  matchesVendorQuery,
+  vendorQueryTokens,
+} from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ComboboxInput } from "@/components/ui/combobox-input";
@@ -143,9 +151,9 @@ function SaveButton() {
 }
 
 /**
- * Fix what was typed when the certificate was filed: the vendor it belongs to
- * and the date it expires. The file is not touched here — replacing that is
- * what "Upload a new version" is for.
+ * Fix what was typed when the certificate was filed: the vendor it belongs to,
+ * the date it expires, and the reminder schedule it runs on. The file is not
+ * touched here — replacing that is what "Upload a new version" is for.
  *
  * Code and name behave exactly as they do on the upload form, including filling
  * each other in, so correcting a vendor is the same gesture as choosing one.
@@ -233,12 +241,56 @@ function EditCertForm({
         </div>
       </div>
 
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="space-y-2">
+          <Label htmlFor={`edit-reminder-${doc.id}`}>
+            First reminder (days before)
+          </Label>
+          <Input
+            id={`edit-reminder-${doc.id}`}
+            name="reminder_days_before"
+            type="number"
+            min={0}
+            defaultValue={doc.reminder_days_before}
+            required
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`edit-second-reminder-${doc.id}`}>
+            Second reminder (days before)
+          </Label>
+          <Input
+            id={`edit-second-reminder-${doc.id}`}
+            name="second_reminder_days_before"
+            type="number"
+            min={0}
+            defaultValue={doc.second_reminder_days_before}
+            required
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`edit-escalation-${doc.id}`}>
+            Escalate after (days past)
+          </Label>
+          <Input
+            id={`edit-escalation-${doc.id}`}
+            name="escalation_days"
+            type="number"
+            min={0}
+            defaultValue={doc.escalation_days}
+            required
+          />
+        </div>
+      </div>
+
       <p className="text-xs text-muted-foreground">
         The code decides which folder this certificate is filed under — an
         existing code moves it there, a new one creates the folder. A changed
         name renames the vendor, as long as the folder holds none of anyone
-        else&apos;s certificates. Correcting the expiry re-arms the reminders;
-        to replace the file itself, upload a new version.
+        else&apos;s certificates. Correcting the expiry re-arms the reminders.
+        Retuning the days does not: a reminder already sent stays sent, and one
+        still pending fires against the new window. Set either reminder to 0 to
+        switch it off; to replace the file itself, upload a new version.
       </p>
 
       {state?.error && (
@@ -262,6 +314,12 @@ function EditCertForm({
   );
 }
 
+/**
+ * Older files kept from before a new version started replacing the one it
+ * supersedes. Nothing new lands here, so most certificates have a single
+ * version and render nothing at all — but the files that predate that change
+ * are still on file, still openable, and still deletable one by one.
+ */
 function VersionHistory({
   doc,
   canWrite,
@@ -291,7 +349,7 @@ function VersionHistory({
               {v.is_current ? (
                 <Badge variant="default">tracked</Badge>
               ) : (
-                <Badge variant="outline">retained</Badge>
+                <Badge variant="outline">superseded</Badge>
               )}
               <span>expiry {formatDate(v.expiry_date)}</span>
               <span>· {formatBytes(v.file_size)}</span>
@@ -309,6 +367,21 @@ function VersionHistory({
       </ul>
     </details>
   );
+}
+
+/**
+ * The two advance reminders as one phrase — "Reminders 60d + 30d before" —
+ * because they belong together on a line that is already dense, and either can
+ * be switched off independently.
+ */
+function reminderSummary(doc: CertDocument) {
+  const days = [doc.reminder_days_before, doc.second_reminder_days_before]
+    .filter((d) => d > 0)
+    .sort((a, b) => b - a);
+
+  if (days.length === 0) return "No advance reminder";
+  if (days.length === 1) return `Reminder ${days[0]}d before`;
+  return `Reminders ${days[0]}d + ${days[1]}d before`;
 }
 
 function CertRow({
@@ -332,17 +405,19 @@ function CertRow({
           </div>
           <p className="text-sm text-muted-foreground">
             PIC {doc.pic_name} · Expires {formatDate(doc.expiry_date)} ·{" "}
-            {doc.reminder_days_before > 0
-              ? `Reminder ${doc.reminder_days_before}d before`
-              : "No advance reminder"}{" "}
-            · Escalates {doc.escalation_days}d after
+            {reminderSummary(doc)} · Escalates {doc.escalation_days}d after
           </p>
           <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <span>📣 {doc.marketing_email}</span>
             <span>🛡️ {doc.management_email}</span>
             {doc.reminded_at && (
               <span className="inline-flex items-center gap-1 text-primary">
-                <BellRing className="size-3" /> advance reminder sent
+                <BellRing className="size-3" /> first reminder sent
+              </span>
+            )}
+            {doc.second_reminded_at && (
+              <span className="inline-flex items-center gap-1 text-primary">
+                <BellRing className="size-3" /> second reminder sent
               </span>
             )}
             {doc.notified_at && (
@@ -447,17 +522,20 @@ export function DocumentsList({
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState<SortOrder>("soonest");
 
-  // Vendor code and name only, as asked. Tokenised so "fresh life" matches
-  // "Fresh Life Pte Ltd" and "FL001 fresh" matches too.
+  // Vendor code and name only, as asked. The matcher is shared with the CSV
+  // export, so the downloaded file is the list on screen.
   const matches = useMemo(() => {
-    const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const tokens = vendorQueryTokens(query);
     if (tokens.length === 0) return documents;
-    return documents.filter((doc) => {
-      const haystack =
-        `${doc.folder?.code ?? ""} ${doc.folder?.name ?? ""}`.toLowerCase();
-      return tokens.every((t) => haystack.includes(t));
-    });
+    return documents.filter((doc) => matchesVendorQuery(doc, tokens));
   }, [documents, query]);
+
+  // The search travels to the export as a query param rather than the rows
+  // themselves: the server re-runs it against what RLS lets this account see,
+  // so nothing the browser holds decides what lands in the file.
+  const exportHref = `/api/export/certificates${
+    query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ""
+  }`;
 
   if (documents.length === 0) {
     return (
@@ -520,6 +598,24 @@ export function DocumentsList({
             <option value="soonest">Closest to expiry first</option>
             <option value="furthest">Furthest from expiry first</option>
           </Select>
+          {/*
+            A plain link, not a fetch-and-blob: the browser downloads the
+            response straight from the route handler, which keeps the whole
+            feature to one server file and works with JavaScript disabled.
+          */}
+          <Button asChild variant="outline">
+            <a
+              href={exportHref}
+              title={
+                filtering
+                  ? "Download the matching certificates as a CSV"
+                  : "Download every certificate you can see as a CSV"
+              }
+            >
+              <FileDown />
+              Export CSV
+            </a>
+          </Button>
         </div>
 
         {groups.length === 0 && (
