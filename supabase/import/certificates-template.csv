@@ -1,0 +1,3 @@
+file_name,vendor_code,vendor_name,cert_type,expiry_date,pic_name,pic_email,marketing_email,management_email,first_reminder_days,second_reminder_days,escalation_days,notes
+brcs-lamb-weston-2027.pdf,FL030,Lamb Weston AU,BRCS FOOD SAFETY,2027-03-14,Cyndi Tay,cynditay@benfoods.com,dannylai@benfoods.com,cynditay@benfoods.com,60,30,7,
+ifs-danish-crown-2027.pdf,FT004A,Danish Crown,SGS - IFS FOOD VERSION,2027-02-01,Cyndi Tay,cynditay@benfoods.com,dannylai@benfoods.com,cynditay@benfoods.com,,,,leave the last three blank to use 60/30/7

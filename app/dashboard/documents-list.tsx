@@ -608,8 +608,8 @@ export function DocumentsList({
               href={exportHref}
               title={
                 filtering
-                  ? "Download the matching certificates as a CSV"
-                  : "Download every certificate you can see as a CSV"
+                  ? "Download every matching certificate on the portal as a CSV"
+                  : "Download every certificate on the portal as a CSV"
               }
             >
               <FileDown />
@@ -617,6 +617,20 @@ export function DocumentsList({
             </a>
           </Button>
         </div>
+
+        {/*
+          The export covers the whole portal, which for a standard user is more
+          than the list below. Said out loud rather than left to be discovered
+          when the file has three times as many rows as the screen.
+        */}
+        {!viewAll && (
+          <p className="-mt-3 text-xs text-muted-foreground">
+            <strong className="font-medium">Export CSV</strong> covers every
+            certificate on the portal, not just yours
+            {filtering ? ", narrowed to your search" : ""} — vendor, PIC,
+            certificate type, expiry and a link to each file.
+          </p>
+        )}
 
         {groups.length === 0 && (
           <p className="py-6 text-center text-sm text-muted-foreground">

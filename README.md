@@ -18,8 +18,9 @@ escalating email reminders**.
   PDF/PNG/JPG/WEBP and capped at **25 MB** once stored
 - **Compression** — photos and large scanned PDFs are re-rendered in the browser
   before upload, typically shedding 70–90% of the bytes
-- **CSV export** — download the register (vendors, PICs, certificate types,
-  expiry dates and more) as a spreadsheet, scoped by the same RLS as the list
+- **CSV export** — any signed-in account downloads the whole register (vendors,
+  PICs, certificate types, expiry dates, contacts, and a link to each file) as a
+  spreadsheet
 - **Four-level reminders**
   1. **60 days before expiry** (default), while the certificate is still valid →
      email the **marketing contact**
@@ -93,7 +94,8 @@ Browser ──► Next.js (App Router)
              │     └─ Server Actions ──► Supabase Postgres + Storage
              ├─ /admin            users · folders · notification tests
              │     └─ Server Actions ──► Supabase Auth Admin API + Postgres
-             ├─ /api/export/certificates   CSV of the register (RLS-scoped)
+             ├─ /api/export/certificates   CSV of the whole register
+             ├─ /api/certificates/[id]/file  session-checked link to a cert
              └─ /api/cron/check-expiries   ◄── Vercel Cron or pg_cron (daily)
                      │  service-role client → lib/reminders.ts
                      └─ Resend → marketing (L1-L3) / management (L4) emails
@@ -326,17 +328,35 @@ filters on vendor code or name. The query is tokenised, so "fresh life" matches
 
 **Export CSV** downloads the register as a spreadsheet — vendor code and name,
 PIC, certificate type, expiry, days to expiry, status, both contacts, the
-reminder schedule and the upload date, one row per certificate, ordered by
-expiry. It is a plain link to
+reminder schedule, the upload date, and a link to each certificate file, one row
+per certificate, ordered by expiry. It is a plain link to
 [`app/api/export/certificates/route.ts`](app/api/export/certificates/route.ts),
 so the browser downloads it directly and it works with JavaScript off.
 
-Who gets which rows is **RLS, not a check in the route**: the query runs on the
-caller's own session client, so a standard user's file holds their own
-certificates and an admin's or department account's holds everybody's — the
-same rows the dashboard shows them. Searching first narrows the download too:
-the search box's text travels as `?q=`, and the server re-runs the same matcher
-the list uses, so nothing the browser is holding decides what lands in the file.
+**Every signed-in account exports every certificate**, standard users included.
+That is wider than the dashboard, which still shows a standard user only their
+own rows, and it is deliberate: the report exists so a PIC can see what is
+outstanding across the portal rather than only their own share of it. The route
+therefore queries with the **service-role client** — RLS would filter it back
+down, and no policy can say "everyone reads everything here" without opening up
+every other read as well. Sign-in is the gate, checked on the caller's own
+session before the service-role client is touched. The dashboard says so under
+the search box, so nobody is surprised by a file with more rows than the screen.
+
+Searching first narrows the download: the search box's text travels as `?q=`,
+and the server re-runs the same matcher the list uses, so nothing the browser is
+holding decides what lands in the file.
+
+The **Certificate link** column points at
+[`app/api/certificates/[id]/file/route.ts`](app/api/certificates/[id]/file/route.ts),
+a permanent URL that checks for a session and then redirects to a 60-second
+signed storage URL. A signed URL written into the spreadsheet itself would be
+two bad things at once: expired by the time anyone opens the file, and a bearer
+token for whoever the report gets forwarded to. This way the spreadsheet carries
+no credential, the links still work in six months, and they are useless to
+anyone without an account. The URL is built from the request's own origin rather
+than `NEXT_PUBLIC_APP_URL`, so it always points at the host the person actually
+downloaded from.
 
 Three details the file depends on: it opens with a UTF-8 BOM (without it Excel
 on Windows mangles non-ASCII vendor names), rows end with CRLF per RFC 4180, and
@@ -501,10 +521,18 @@ against the new date.
 ## Security notes
 
 - The `service_role` key is only imported by server-side modules (the reminder
-  job, the admin console, and the suggestion lookup) and never reaches the
-  browser.
+  job, the admin console, the suggestion lookup, and the two export routes) and
+  never reaches the browser.
 - Certificate reads/writes are constrained by Postgres **RLS** and Storage
   policies: `auth.uid() = user_id`, widened to everything for `public.is_admin()`.
+- **Two read paths deliberately sit outside RLS**: the CSV export and the
+  certificate link it writes into every row. Both use the service-role client so
+  that any signed-in account can see the whole register, which is what the report
+  is for — see [Finding and managing things](#finding-and-managing-things-dashboard).
+  Both check the caller's own session first, and neither can be reached signed
+  out. Everything else — the dashboard, the Server Actions, the file downloads
+  from the list — is still RLS-scoped, so a standard user still cannot *change*
+  anything that is not theirs.
 - Every admin Server Action re-derives the caller's admin status from the
   session. Nothing about who the caller is comes from the form.
 - The one policy that has to see rows the caller cannot goes through a
