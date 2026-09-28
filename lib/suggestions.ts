@@ -1,5 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Suggestions } from "@/lib/types";
+import { splitEmails } from "@/lib/utils";
 
 function distinct(values: (string | null | undefined)[]) {
   const cleaned = values
@@ -32,6 +33,9 @@ export async function getSuggestions(): Promise<Suggestions> {
     vendors: folders.data ?? [],
     certTypes: distinct(rows.map((r) => r.cert_type)),
     marketingEmails: distinct(rows.map((r) => r.marketing_email)),
-    managementEmails: distinct(rows.map((r) => r.management_email)),
+    // Offered one address at a time, not as the lists they were saved in.
+    managementEmails: distinct(
+      rows.flatMap((r) => splitEmails(r.management_email)),
+    ),
   };
 }

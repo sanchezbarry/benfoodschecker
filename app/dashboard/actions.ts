@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { getSession } from "@/lib/session";
 import { displayName } from "@/lib/auth";
 import type { DocumentVersion } from "@/lib/types";
-import { formatDate } from "@/lib/utils";
+import { formatDate, splitEmails } from "@/lib/utils";
 import {
   ACCEPTED_MIME_TYPES,
   DEFAULT_ESCALATION_DAYS,
@@ -257,7 +257,9 @@ export async function createDocument(
   const expiryRaw = String(formData.get("expiry_date") ?? "");
   const expiryDate = expiryRaw ? new Date(expiryRaw) : null;
   const marketingEmail = String(formData.get("marketing_email") ?? "").trim();
-  const managementEmail = String(formData.get("management_email") ?? "").trim();
+  const managementEmails = splitEmails(
+    String(formData.get("management_email") ?? ""),
+  );
   const escalationDays = Number(
     formData.get("escalation_days") ?? DEFAULT_ESCALATION_DAYS,
   );
@@ -278,8 +280,13 @@ export async function createDocument(
     return fail("Expiry date is required.");
   if (!EMAIL_RE.test(marketingEmail))
     return fail("Enter a valid marketing contact email.");
-  if (!EMAIL_RE.test(managementEmail))
-    return fail("Enter a valid senior management email.");
+  if (managementEmails.length === 0)
+    return fail("Enter at least one senior management email.");
+  const badManagementEmail = managementEmails.find((e) => !EMAIL_RE.test(e));
+  if (badManagementEmail)
+    return fail(
+      `"${badManagementEmail}" isn't a valid senior management email. Separate several with commas.`,
+    );
   if (!Number.isFinite(escalationDays) || escalationDays < 0)
     return fail("Escalation days must be a positive number.");
   const reminderProblem = checkReminderDays(
@@ -322,7 +329,7 @@ export async function createDocument(
       file_size: upload.size,
       expiry_date: expiryDate.toISOString(),
       marketing_email: marketingEmail,
-      management_email: managementEmail,
+      management_email: managementEmails.join(", "),
       reminder_days_before: Math.round(reminderDaysBefore),
       second_reminder_days_before: Math.round(secondReminderDaysBefore),
       escalation_days: Math.round(escalationDays),

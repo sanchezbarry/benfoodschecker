@@ -113,3 +113,22 @@ export function formatBytes(bytes: number) {
   const value = bytes / 1024 ** i;
   return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
+
+/**
+ * Split a comma-separated address list into its addresses — how several senior
+ * management contacts share the one `management_email` field. Entries are
+ * trimmed and de-duplicated case-insensitively, and the blanks a stray or
+ * trailing comma leaves behind are dropped rather than reported as invalid.
+ */
+export function splitEmails(value: string | null | undefined): string[] {
+  const seen = new Set<string>();
+  const emails: string[] = [];
+  for (const part of (value ?? "").split(",")) {
+    const email = part.trim();
+    const key = email.toLowerCase();
+    if (!email || seen.has(key)) continue;
+    seen.add(key);
+    emails.push(email);
+  }
+  return emails;
+}

@@ -19,6 +19,7 @@ import {
   MIN_PASSWORD_LENGTH,
 } from "@/lib/constants";
 import type { CertDocument } from "@/lib/types";
+import { splitEmails } from "@/lib/utils";
 
 export type AdminState = { error?: string; success?: string } | null;
 
@@ -383,26 +384,29 @@ export async function sendEscalationTest(
   const session = await requireAdmin();
   if (!session) return { error: "Admins only." };
 
-  const to = String(formData.get("escalate_to") ?? "").trim();
+  const to = splitEmails(String(formData.get("escalate_to") ?? ""));
   const cc = String(formData.get("cc") ?? "").trim();
   const certId = String(formData.get("cert_id") ?? "");
 
-  if (!EMAIL_RE.test(to))
-    return { error: "Enter a valid email address to escalate to." };
+  if (to.length === 0 || to.some((e) => !EMAIL_RE.test(e)))
+    return {
+      error:
+        "Enter a valid email address to escalate to, or several separated by commas.",
+    };
   if (cc && !EMAIL_RE.test(cc))
     return { error: "The cc address doesn't look like a valid email." };
 
   const cert = await resolveSample(session.supabase, certId);
 
   const { error } = await sendEscalationEmail(cert, {
-    to,
+    to: to.join(", "),
     cc: cc || null,
     test: true,
   });
   if (error) return { error: `The mail server rejected it: ${error.message}` };
 
   return {
-    success: `Escalation test sent to ${to}${cc ? `, cc ${cc}` : ""}.`,
+    success: `Escalation test sent to ${to.join(", ")}${cc ? `, cc ${cc}` : ""}.`,
   };
 }
 

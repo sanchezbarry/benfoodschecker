@@ -50,6 +50,7 @@ export interface CertDocument {
   file_size: number;
   expiry_date: string; // ISO timestamptz — 00:00 local on the expiry date
   marketing_email: string;
+  /** One or more addresses, stored comma-separated: "a@x.com, b@x.com". */
   management_email: string;
   /** Days before expiry for the first advance reminder. 0 disables it. */
   reminder_days_before: number;

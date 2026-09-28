@@ -205,6 +205,7 @@ export function TestsPanel({
                 id="escalate_to"
                 name="escalate_to"
                 type="email"
+                multiple
                 defaultValue={defaultEmail}
                 placeholder="director@benfoods.com"
                 required

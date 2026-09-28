@@ -215,16 +215,21 @@ export function UploadForm({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="management_email">Senior management email</Label>
+              <Label htmlFor="management_email">Senior management email(s)</Label>
               <ComboboxInput
                 id="management_email"
                 name="management_email"
                 type="email"
+                multiple
                 options={suggestions.managementEmails}
-                placeholder="director@benfoods.com"
+                placeholder="director@benfoods.com, ceo@benfoods.com"
+                aria-describedby="management-hint"
                 autoComplete="off"
                 required
               />
+              <p id="management-hint" className="text-xs text-muted-foreground">
+                Separate several with commas — each one gets the escalation.
+              </p>
             </div>
 
             <div className="space-y-2">

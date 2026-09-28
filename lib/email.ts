@@ -1,6 +1,6 @@
 import { Resend } from "resend";
 import type { CertDocument } from "@/lib/types";
-import { certLabel, daysUntil, formatDate } from "@/lib/utils";
+import { certLabel, daysUntil, formatDate, splitEmails } from "@/lib/utils";
 import { APP_URL } from "@/lib/constants";
 
 const FROM = process.env.EMAIL_FROM ?? "Cert Checker <onboarding@resend.dev>";
@@ -20,22 +20,29 @@ const FROM = process.env.EMAIL_FROM ?? "Cert Checker <onboarding@resend.dev>";
 const REDIRECT_TO = process.env.EMAIL_REDIRECT_TO?.trim() ?? "";
 
 type Routed = {
-  to: string;
+  to: string[];
   cc?: string;
   subjectPrefix: string;
   notice: string;
 };
 
+/**
+ * `to` may be a comma-separated list (senior management can be several people),
+ * so it goes out as an array: Resend only takes several recipients that way, and
+ * Nodemailer is happy with either.
+ */
 function route(to: string, cc?: string | null): Routed {
+  const recipients = splitEmails(to);
+  const named = recipients.join(", ");
   // No redirect configured, or it would land in the same inbox anyway.
-  if (!REDIRECT_TO || to.trim().toLowerCase() === REDIRECT_TO.toLowerCase()) {
-    return { to, ...(cc ? { cc } : {}), subjectPrefix: "", notice: "" };
+  if (!REDIRECT_TO || named.toLowerCase() === REDIRECT_TO.toLowerCase()) {
+    return { to: recipients, ...(cc ? { cc } : {}), subjectPrefix: "", notice: "" };
   }
-  const intended = cc ? `${to} (cc ${cc})` : to;
+  const intended = cc ? `${named} (cc ${cc})` : named;
   return {
-    to: REDIRECT_TO,
+    to: [REDIRECT_TO],
     // cc is dropped: it would be refused for exactly the same reason.
-    subjectPrefix: `[for ${to}] `,
+    subjectPrefix: `[for ${named}] `,
     notice: `<div style="margin:0 0 16px;padding:10px 12px;border:1px dashed ${C.line};border-radius:8px;background:${C.page};font-size:13px;color:${C.muted}">
         <strong style="color:${C.ink}">Redirected.</strong> This would normally be sent to ${intended}. All reminders are routed here while the sending domain is unverified.
       </div>`,
@@ -87,7 +94,7 @@ function smtpConfigured() {
 }
 
 async function deliver(message: {
-  to: string;
+  to: string[];
   cc?: string;
   subject: string;
   html: string;
@@ -277,7 +284,10 @@ export async function sendExpiryEmail(cert: MailableCert, opts: SendOptions = {}
   });
 }
 
-/** Level 4: still not renewed after the grace period. Escalate to management. */
+/**
+ * Level 4: still not renewed after the grace period. Escalate to management —
+ * every address in `management_email`, in one email so they see each other.
+ */
 export async function sendEscalationEmail(
   cert: MailableCert,
   opts: SendOptions & { cc?: string | null } = {},

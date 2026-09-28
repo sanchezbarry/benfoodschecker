@@ -98,7 +98,8 @@ create table public.documents (
   expiry_date      timestamptz not null, -- ALWAYS the current version's expiry,
                                          -- stored as 00:00 Asia/Singapore
   marketing_email  text not null,        -- Levels 1-3 contact
-  management_email text not null,        -- Level 4 (escalation) contact
+  management_email text not null,        -- Level 4 (escalation) contacts,
+                                         -- comma-separated
   -- Days before expiry for the two advance reminders. 0 disables either one.
   -- The second is the nearer of the two, so it is normally the smaller number.
   reminder_days_before integer not null default 60 check (reminder_days_before >= 0),
