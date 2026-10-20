@@ -152,21 +152,24 @@ function SaveButton() {
 
 /**
  * Fix what was typed when the certificate was filed: the vendor it belongs to,
- * the date it expires, and the reminder schedule it runs on. The file is not
- * touched here — replacing that is what "Upload a new version" is for.
+ * its type, the date it expires, who its emails go to, and the reminder
+ * schedule it runs on. The file is not touched here — replacing that is what
+ * "Upload a new version" is for.
  *
- * Code and name behave exactly as they do on the upload form, including filling
- * each other in, so correcting a vendor is the same gesture as choosing one.
+ * Every field behaves exactly as it does on the upload form, with the same
+ * suggestions, and code and name fill each other in, so correcting a vendor is
+ * the same gesture as choosing one.
  */
 function EditCertForm({
   doc,
-  vendors,
+  suggestions,
   onClose,
 }: {
   doc: CertDocument;
-  vendors: Suggestions["vendors"];
+  suggestions: Suggestions;
   onClose: () => void;
 }) {
+  const { vendors } = suggestions;
   const [state, formAction] = useActionState<ActionState, FormData>(
     updateDocument,
     null,
@@ -243,6 +246,49 @@ function EditCertForm({
 
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="space-y-2">
+          <Label htmlFor={`edit-type-${doc.id}`}>Certificate type</Label>
+          <ComboboxInput
+            id={`edit-type-${doc.id}`}
+            name="cert_type"
+            options={suggestions.certTypes}
+            defaultValue={doc.cert_type}
+            autoComplete="off"
+            required
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`edit-marketing-${doc.id}`}>
+            Marketing contact email
+          </Label>
+          <ComboboxInput
+            id={`edit-marketing-${doc.id}`}
+            name="marketing_email"
+            type="email"
+            options={suggestions.marketingEmails}
+            defaultValue={doc.marketing_email}
+            autoComplete="off"
+            required
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`edit-management-${doc.id}`}>
+            Senior management email(s)
+          </Label>
+          <ComboboxInput
+            id={`edit-management-${doc.id}`}
+            name="management_email"
+            type="email"
+            multiple
+            options={suggestions.managementEmails}
+            defaultValue={doc.management_email}
+            autoComplete="off"
+            required
+          />
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="space-y-2">
           <Label htmlFor={`edit-reminder-${doc.id}`}>
             First reminder (days before)
           </Label>
@@ -288,9 +334,11 @@ function EditCertForm({
         existing code moves it there, a new one creates the folder. A changed
         name renames the vendor, as long as the folder holds none of anyone
         else&apos;s certificates. Correcting the expiry re-arms the reminders.
-        Retuning the days does not: a reminder already sent stays sent, and one
-        still pending fires against the new window. Set either reminder to 0 to
-        switch it off; to replace the file itself, upload a new version.
+        Retuning the days or changing a contact does not: a reminder already
+        sent stays sent, and the next one goes out on the new schedule to the
+        new addresses. Separate several management emails with commas. Set
+        either reminder to 0 to switch it off; to replace the file itself,
+        upload a new version.
       </p>
 
       {state?.error && (
@@ -387,11 +435,11 @@ function reminderSummary(doc: CertDocument) {
 function CertRow({
   doc,
   canWrite,
-  vendors,
+  suggestions,
 }: {
   doc: CertDocument;
   canWrite: boolean;
-  vendors: Suggestions["vendors"];
+  suggestions: Suggestions;
 }) {
   const [editing, setEditing] = useState(false);
 
@@ -446,7 +494,7 @@ function CertRow({
       {canWrite && editing && (
         <EditCertForm
           doc={doc}
-          vendors={vendors}
+          suggestions={suggestions}
           onClose={() => setEditing(false)}
         />
       )}
@@ -506,7 +554,7 @@ export function DocumentsList({
   documents,
   viewAll,
   canWrite,
-  vendors,
+  suggestions,
 }: {
   documents: CertDocument[];
   /** Whether this account sees everyone's certificates, not just its own. */
@@ -516,8 +564,8 @@ export function DocumentsList({
    * dropped. Admins keep theirs on every row, not just their own.
    */
   canWrite: boolean;
-  /** Existing vendors, offered as hints on the edit form. */
-  vendors: Suggestions["vendors"];
+  /** Values already on file, offered as hints on the edit form. */
+  suggestions: Suggestions;
 }) {
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState<SortOrder>("soonest");
@@ -652,7 +700,7 @@ export function DocumentsList({
                   key={doc.id}
                   doc={doc}
                   canWrite={canWrite}
-                  vendors={vendors}
+                  suggestions={suggestions}
                 />
               ))}
             </div>

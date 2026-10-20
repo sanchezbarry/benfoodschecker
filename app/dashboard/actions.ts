@@ -197,7 +197,7 @@ async function resolveVendorFolder(
 }
 
 // ---------------------------------------------------------------------------
-// Reminder schedule
+// Reminder schedule and contacts
 // ---------------------------------------------------------------------------
 
 /**
@@ -217,6 +217,25 @@ function checkReminderDays(first: number, second: number): string | null {
     return "Second reminder days must be 0 or more.";
   if (first > 0 && second > 0 && second >= first)
     return "The second reminder must be closer to expiry than the first — give it fewer days.";
+  return null;
+}
+
+/**
+ * Validate who a certificate's emails go to, returning the problem to show the
+ * user or `null` when they are fine. Shared by filing and editing, so a contact
+ * that is refused on one is refused on the other with the same words.
+ */
+function checkContacts(
+  marketingEmail: string,
+  managementEmails: string[],
+): string | null {
+  if (!EMAIL_RE.test(marketingEmail))
+    return "Enter a valid marketing contact email.";
+  if (managementEmails.length === 0)
+    return "Enter at least one senior management email.";
+  const bad = managementEmails.find((e) => !EMAIL_RE.test(e));
+  if (bad)
+    return `"${bad}" isn't a valid senior management email. Separate several with commas.`;
   return null;
 }
 
@@ -278,15 +297,8 @@ export async function createDocument(
   if (!certType) return fail("Certificate type is required.");
   if (!expiryRaw || !expiryDate || Number.isNaN(expiryDate.getTime()))
     return fail("Expiry date is required.");
-  if (!EMAIL_RE.test(marketingEmail))
-    return fail("Enter a valid marketing contact email.");
-  if (managementEmails.length === 0)
-    return fail("Enter at least one senior management email.");
-  const badManagementEmail = managementEmails.find((e) => !EMAIL_RE.test(e));
-  if (badManagementEmail)
-    return fail(
-      `"${badManagementEmail}" isn't a valid senior management email. Separate several with commas.`,
-    );
+  const contactProblem = checkContacts(marketingEmail, managementEmails);
+  if (contactProblem) return fail(contactProblem);
   if (!Number.isFinite(escalationDays) || escalationDays < 0)
     return fail("Escalation days must be a positive number.");
   const reminderProblem = checkReminderDays(
@@ -566,8 +578,9 @@ export async function uploadNewVersion(
 
 /**
  * Correct the details of a certificate that is already on file: which vendor it
- * belongs to, and when it expires. For fixing a mistake made at upload time,
- * without deleting the certificate and losing its version history.
+ * belongs to, what it is, when it expires and who its emails go to. For fixing
+ * a mistake made at upload time, without deleting the certificate and losing
+ * its version history.
  *
  * The vendor **code** decides which folder the certificate sits in — exactly as
  * it does when filing one. An existing code (case-insensitively) re-files it
@@ -594,6 +607,11 @@ export async function uploadNewVersion(
  * the contact a second time. One not yet sent simply fires against the new
  * window on the next run.
  *
+ * The **certificate type** and the two **contacts** — marketing, and senior
+ * management — are plain fields on the certificate, editable for the same
+ * reason. A changed contact receives whatever email is due next; nothing
+ * already sent goes out again, exactly as with a retuned lead time.
+ *
  * The file, the PIC and the owner are untouched — replacing the file is what
  * `uploadNewVersion` is for. An admin editing on someone's behalf does not
  * become the owner.
@@ -609,8 +627,13 @@ export async function updateDocument(
   const id = String(formData.get("id") ?? "");
   const vendorCode = String(formData.get("vendor_code") ?? "").trim();
   const vendorName = String(formData.get("vendor_name") ?? "").trim();
+  const certType = String(formData.get("cert_type") ?? "").trim();
   const expiryRaw = String(formData.get("expiry_date") ?? "");
   const expiryDate = expiryRaw ? new Date(expiryRaw) : null;
+  const marketingEmail = String(formData.get("marketing_email") ?? "").trim();
+  const managementEmails = splitEmails(
+    String(formData.get("management_email") ?? ""),
+  );
   // `null` means "leave it alone", which is what an omitted field gets — never
   // 0, which would silently switch a reminder off.
   const optionalDays = (field: string) => {
@@ -624,8 +647,11 @@ export async function updateDocument(
   if (!id) return { error: "Choose which certificate you're editing." };
   if (!vendorCode) return { error: "Vendor / customer code is required." };
   if (!vendorName) return { error: "Vendor / customer name is required." };
+  if (!certType) return { error: "Certificate type is required." };
   if (!expiryRaw || !expiryDate || Number.isNaN(expiryDate.getTime()))
     return { error: "Expiry date is required." };
+  const contactProblem = checkContacts(marketingEmail, managementEmails);
+  if (contactProblem) return { error: contactProblem };
 
   // RLS scopes this to the caller's own certificate (or any, for an admin), so
   // the id off the form can only ever name a row they are allowed to change.
@@ -633,7 +659,7 @@ export async function updateDocument(
   const { data: existing, error: fetchError } = await supabase
     .from("documents")
     .select(
-      "id, cert_type, folder_id, expiry_date, status, reminded_at, second_reminded_at, notified_at, escalated_at, reminder_days_before, second_reminder_days_before, escalation_days",
+      "id, cert_type, folder_id, expiry_date, marketing_email, management_email, status, reminded_at, second_reminded_at, notified_at, escalated_at, reminder_days_before, second_reminder_days_before, escalation_days",
     )
     .eq("id", id)
     .single();
@@ -697,11 +723,25 @@ export async function updateDocument(
     }
   }
 
+  // ---- Type ----
+  // Compared exactly, like the vendor name: "brc" → "BRC" is a deliberate fix.
+  if (certType !== existing.cert_type)
+    changes.push(`type changed to ${certType}`);
+
   // ---- Expiry ----
   const expiryIso = expiryDate.toISOString();
   const expiryChanged =
     new Date(existing.expiry_date).getTime() !== expiryDate.getTime();
   if (expiryChanged) changes.push(`expiry corrected to ${formatDate(expiryIso)}`);
+
+  // ---- Contacts ----
+  // The stored list is normalised before comparing, so the same addresses
+  // written with different spacing don't count as a change.
+  const managementEmail = managementEmails.join(", ");
+  if (marketingEmail !== existing.marketing_email)
+    changes.push(`marketing contact now ${marketingEmail}`);
+  if (managementEmail !== splitEmails(existing.management_email).join(", "))
+    changes.push(`senior management now ${managementEmail}`);
 
   // ---- Reminder schedule ----
   // Reported as one change however many of the three moved: "reminders now
@@ -725,7 +765,10 @@ export async function updateDocument(
     .from("documents")
     .update({
       folder_id: folder.id,
+      cert_type: certType,
       expiry_date: expiryIso,
+      marketing_email: marketingEmail,
+      management_email: managementEmail,
       reminder_days_before: reminderDays,
       second_reminder_days_before: secondReminderDays,
       escalation_days: escalationDays,
@@ -758,7 +801,10 @@ export async function updateDocument(
         .from("documents")
         .update({
           folder_id: existing.folder_id,
+          cert_type: existing.cert_type,
           expiry_date: existing.expiry_date,
+          marketing_email: existing.marketing_email,
+          management_email: existing.management_email,
           reminder_days_before: existing.reminder_days_before,
           second_reminder_days_before: existing.second_reminder_days_before,
           escalation_days: existing.escalation_days,

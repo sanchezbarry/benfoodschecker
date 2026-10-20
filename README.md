@@ -10,9 +10,9 @@ escalating email reminders**.
 - **Versions** — upload a new version of a certificate and it **replaces** the
   file it supersedes, which is deleted. Only the newest version's expiry date is
   tracked.
-- **Edit** — fix the vendor code, vendor name or expiry date typed at upload,
-  without deleting the certificate and losing its history. Admins can do it on
-  anyone's behalf.
+- **Edit** — fix the vendor, certificate type, expiry date, contacts or reminder
+  schedule typed at upload, without deleting the certificate and losing its
+  history. Admins can do it on anyone's behalf.
 - **Upload** — PDFs or images, sent **straight from the browser** to a private
   Supabase Storage bucket via a signed upload URL, restricted to
   PDF/PNG/JPG/WEBP and capped at **25 MB** once stored
@@ -391,8 +391,9 @@ everybody else's certificates. Renaming is a deliberate act, so it lives in
 ### Editing a certificate (`/dashboard`)
 
 Every certificate row has an **Edit** panel for correcting what was typed when
-it was filed — vendor code, vendor name, expiry date and the reminder schedule —
-so a mistake no longer means deleting the certificate and losing its history. Owners edit their
+it was filed — vendor code, vendor name, certificate type, expiry date, the
+marketing and senior management contacts, and the reminder schedule — so a
+mistake no longer means deleting the certificate and losing its history. Owners edit their
 own; admins edit anyone's, from the same list. Department accounts see no Edit
 button, and the Server Action refuses them anyway.
 
@@ -400,7 +401,9 @@ button, and the Server Action refuses them anyway.
 | --- | --- |
 | Vendor / customer code | decides which folder the certificate is filed under — an existing code **moves** it there, a new code creates the folder |
 | Vendor / customer name | **renames** the vendor, if the folder holds none of anyone else's certificates; otherwise the stored name stands and the reply says so |
+| Certificate type | relabels the certificate; nothing else changes |
 | Expiry date | written to the certificate **and** to its current version, which the certificate mirrors |
+| Marketing contact, senior management email(s) | decides who the **next** email goes to. Nothing already sent goes out again, so correcting a contact never re-sends a reminder |
 | First / second reminder, escalation window | retunes the schedule without waiting for the next renewal. Changing a lead time never un-sends: a reminder already sent stays sent, and one still pending fires against the new window |
 
 The file, the PIC and the owner are deliberately out of scope: replacing the
