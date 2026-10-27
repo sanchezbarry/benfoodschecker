@@ -405,10 +405,16 @@ button, and the Server Action refuses them anyway.
 | Expiry date | written to the certificate **and** to its current version, which the certificate mirrors |
 | Marketing contact, senior management email(s) | decides who the **next** email goes to. Nothing already sent goes out again, so correcting a contact never re-sends a reminder |
 | First / second reminder, escalation window | retunes the schedule without waiting for the next renewal. Changing a lead time never un-sends: a reminder already sent stays sent, and one still pending fires against the new window |
+| PIC (account email) — **admins only** | hands the certificate to that account: it becomes the owner, shows as PIC and can edit it. The new PIC needs an account already, and not a view-only one |
 
-The file, the PIC and the owner are deliberately out of scope: replacing the
-file is what a new version is for, and an admin editing on someone's behalf
-never becomes the owner.
+The PIC is the account that owns the certificate, which is why only an admin
+may change it — the documents policy refuses anyone else, and the field is only
+on an admin's form. Because the storage policies let people open and replace
+files only in their own folder, the certificate's files move into the new PIC's
+folder with it; every step is undone if a later one fails.
+
+The file itself is out of scope: replacing it is what a new version is for, and
+an admin editing on someone's behalf never becomes the owner.
 
 A folder is shared, so renaming it rewrites the vendor shown on every
 certificate inside — which is why it was admin-only. That reasoning stops

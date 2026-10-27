@@ -31,7 +31,7 @@ import {
   updateDocument,
   type ActionState,
 } from "./actions";
-import type { CertDocument, DocumentVersion, Suggestions } from "@/lib/types";
+import type { AppUser, CertDocument, DocumentVersion, Suggestions } from "@/lib/types";
 import {
   daysUntil,
   formatBytes,
@@ -54,6 +54,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+
+/** An account a certificate can be handed to, as the PIC. */
+export type Owner = Pick<AppUser, "id" | "email" | "full_name">;
 
 function ExpiryBadge({ doc }: { doc: CertDocument }) {
   const days = daysUntil(doc.expiry_date);
@@ -159,17 +162,24 @@ function SaveButton() {
  * Every field behaves exactly as it does on the upload form, with the same
  * suggestions, and code and name fill each other in, so correcting a vendor is
  * the same gesture as choosing one.
+ *
+ * Admins also get the PIC: `owners` is only passed for them, and without it the
+ * field is simply not on the form, which the action reads as "unchanged".
  */
 function EditCertForm({
   doc,
   suggestions,
+  owners,
   onClose,
 }: {
   doc: CertDocument;
   suggestions: Suggestions;
+  owners?: Owner[];
   onClose: () => void;
 }) {
   const { vendors } = suggestions;
+  const ownerEmails = useMemo(() => (owners ?? []).map((o) => o.email), [owners]);
+  const currentOwner = owners?.find((o) => o.id === doc.user_id);
   const [state, formAction] = useActionState<ActionState, FormData>(
     updateDocument,
     null,
@@ -286,6 +296,28 @@ function EditCertForm({
           />
         </div>
       </div>
+
+      {owners && (
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="space-y-2">
+            <Label htmlFor={`edit-pic-${doc.id}`}>PIC (account email)</Label>
+            <ComboboxInput
+              id={`edit-pic-${doc.id}`}
+              name="pic_email"
+              type="email"
+              options={ownerEmails}
+              defaultValue={currentOwner?.email ?? ""}
+              autoComplete="off"
+              required
+            />
+          </div>
+          <p className="text-xs text-muted-foreground sm:col-span-2 sm:self-end">
+            Hands the certificate to that person&apos;s account: they show as
+            its PIC and can edit it, and its file moves with it. They need an
+            account first — create one in Admin. Only admins can change this.
+          </p>
+        </div>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="space-y-2">
@@ -436,10 +468,12 @@ function CertRow({
   doc,
   canWrite,
   suggestions,
+  owners,
 }: {
   doc: CertDocument;
   canWrite: boolean;
   suggestions: Suggestions;
+  owners?: Owner[];
 }) {
   const [editing, setEditing] = useState(false);
 
@@ -495,6 +529,7 @@ function CertRow({
         <EditCertForm
           doc={doc}
           suggestions={suggestions}
+          owners={owners}
           onClose={() => setEditing(false)}
         />
       )}
@@ -555,6 +590,7 @@ export function DocumentsList({
   viewAll,
   canWrite,
   suggestions,
+  owners,
 }: {
   documents: CertDocument[];
   /** Whether this account sees everyone's certificates, not just its own. */
@@ -566,6 +602,8 @@ export function DocumentsList({
   canWrite: boolean;
   /** Values already on file, offered as hints on the edit form. */
   suggestions: Suggestions;
+  /** Accounts a certificate can be handed to. Only passed for admins. */
+  owners?: Owner[];
 }) {
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState<SortOrder>("soonest");
@@ -701,6 +739,7 @@ export function DocumentsList({
                   doc={doc}
                   canWrite={canWrite}
                   suggestions={suggestions}
+                  owners={owners}
                 />
               ))}
             </div>

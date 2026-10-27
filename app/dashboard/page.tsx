@@ -6,6 +6,7 @@ import { getSession } from "@/lib/session";
 import { ROLE_LABELS, displayName } from "@/lib/auth";
 import { getSuggestions } from "@/lib/suggestions";
 import type { CertDocument } from "@/lib/types";
+import { listUsers } from "@/app/admin/data";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -28,12 +29,21 @@ export default async function DashboardPage() {
 
   // RLS decides the rows: a standard user sees their own, admins and department
   // users see everyone's.
-  const [{ data }, suggestions] = await Promise.all([
+  const [{ data }, suggestions, owners] = await Promise.all([
     supabase
       .from("documents")
       .select("*, folder:folders(id, code, name), versions:document_versions(*)")
       .order("expiry_date", { ascending: true }),
     getSuggestions(),
+    // Only an admin may hand a certificate to someone else, so only an admin
+    // needs the accounts it could go to. View-only accounts can't own one.
+    admin
+      ? listUsers().then(({ users }) =>
+          users
+            .filter((u) => u.role !== "department")
+            .map(({ id, email, full_name }) => ({ id, email, full_name })),
+        )
+      : undefined,
   ]);
 
   const documents = (data ?? []) as CertDocument[];
@@ -93,6 +103,7 @@ export default async function DashboardPage() {
           viewAll={viewAll}
           canWrite={write}
           suggestions={suggestions}
+          owners={owners}
         />
         <ChangePasswordForm />
       </main>

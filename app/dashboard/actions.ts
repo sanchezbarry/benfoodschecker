@@ -1,8 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import type { User } from "@supabase/supabase-js";
 import { getSession } from "@/lib/session";
-import { displayName } from "@/lib/auth";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { displayName, roleOf } from "@/lib/auth";
 import type { DocumentVersion } from "@/lib/types";
 import { formatDate, splitEmails } from "@/lib/utils";
 import {
@@ -573,6 +575,99 @@ export async function uploadNewVersion(
 }
 
 // ---------------------------------------------------------------------------
+// PIC — the account that owns a certificate
+// ---------------------------------------------------------------------------
+
+type ServiceClient = ReturnType<typeof createAdminClient>;
+
+/** The account behind an email. Service role: a session can't list users. */
+async function findAccount(
+  service: ServiceClient,
+  email: string,
+): Promise<{ ok: true; account: User | null } | { ok: false; error: string }> {
+  const wanted = email.toLowerCase();
+  for (let page = 1; ; page++) {
+    const { data, error } = await service.auth.admin.listUsers({ page, perPage: 1000 });
+    if (error || !data) return { ok: false, error: error?.message ?? "unknown error" };
+    const match = data.users.find((u) => u.email?.toLowerCase() === wanted);
+    if (match) return { ok: true, account: match };
+    if (data.users.length < 1000) return { ok: true, account: null };
+  }
+}
+
+/**
+ * Hand a certificate to another account. It becomes the owner and shows as
+ * PIC, and every file the certificate has moves into that account's storage
+ * folder: the storage policies only let people open and replace files in their
+ * own folder, so a file left behind would lock the new PIC out of their own
+ * certificate. Runs with the service role — moving into somebody else's folder
+ * is beyond any session — so the caller must already have checked for an admin.
+ *
+ * Each step is undone if a later one fails, leaving the certificate exactly as
+ * it was.
+ */
+async function transferCertificate(
+  service: ServiceClient,
+  documentId: string,
+  owner: User,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { data: doc, error: fetchError } = await service
+    .from("documents")
+    .select("id, user_id, pic_name, file_path, versions:document_versions(id, file_path)")
+    .eq("id", documentId)
+    .single();
+  if (fetchError || !doc) return { ok: false, error: "could not find that certificate" };
+
+  const versions = (doc.versions ?? []) as { id: string; file_path: string }[];
+  const destination = (path: string) => `${owner.id}/${path.split("/").pop()}`;
+  const toMove = [
+    ...new Set([doc.file_path, ...versions.map((v) => v.file_path)].filter(Boolean)),
+  ].filter((path) => !path.startsWith(`${owner.id}/`));
+
+  const bucket = service.storage.from(DOCUMENTS_BUCKET);
+  const moved: string[] = [];
+  const moveBack = async () => {
+    for (const path of moved) await bucket.move(destination(path), path);
+  };
+  for (const path of toMove) {
+    const { error } = await bucket.move(path, destination(path));
+    if (error) {
+      await moveBack();
+      return { ok: false, error: `could not move its file (${error.message})` };
+    }
+    moved.push(path);
+  }
+  const newPath = (path: string) => (moved.includes(path) ? destination(path) : path);
+
+  const { error: docError } = await service
+    .from("documents")
+    .update({ user_id: owner.id, pic_name: displayName(owner), file_path: newPath(doc.file_path) })
+    .eq("id", doc.id);
+  if (docError) {
+    await moveBack();
+    return { ok: false, error: docError.message };
+  }
+
+  for (const version of versions.filter((v) => moved.includes(v.file_path))) {
+    const { error } = await service
+      .from("document_versions")
+      .update({ file_path: destination(version.file_path) })
+      .eq("id", version.id);
+    if (error) {
+      for (const v of versions)
+        await service.from("document_versions").update({ file_path: v.file_path }).eq("id", v.id);
+      await service
+        .from("documents")
+        .update({ user_id: doc.user_id, pic_name: doc.pic_name, file_path: doc.file_path })
+        .eq("id", doc.id);
+      await moveBack();
+      return { ok: false, error: error.message };
+    }
+  }
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
 // Edit
 // ---------------------------------------------------------------------------
 
@@ -612,15 +707,20 @@ export async function uploadNewVersion(
  * reason. A changed contact receives whatever email is due next; nothing
  * already sent goes out again, exactly as with a retuned lead time.
  *
- * The file, the PIC and the owner are untouched — replacing the file is what
- * `uploadNewVersion` is for. An admin editing on someone's behalf does not
- * become the owner.
+ * The **PIC** is the account that owns the certificate, and only an admin may
+ * change it — the database refuses anyone else. The field is only on an
+ * admin's form; when it is absent the PIC is left alone. A new PIC must already
+ * have an account, and not a view-only one; the certificate's files move into
+ * their storage folder with it (see `transferCertificate`).
+ *
+ * The file itself is untouched — replacing it is what `uploadNewVersion` is
+ * for. An admin editing on someone's behalf does not become the owner.
  */
 export async function updateDocument(
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  const { supabase, user, write } = await getSession();
+  const { supabase, user, write, admin } = await getSession();
   if (!user) return { error: "You must be signed in." };
   if (!write) return { error: "Your account is view-only, so it can't change certificates." };
 
@@ -634,6 +734,9 @@ export async function updateDocument(
   const managementEmails = splitEmails(
     String(formData.get("management_email") ?? ""),
   );
+  // Only an admin's form carries it; absent means "leave the PIC alone".
+  const picField = formData.get("pic_email");
+  const picEmail = picField === null ? null : String(picField).trim();
   // `null` means "leave it alone", which is what an omitted field gets — never
   // 0, which would silently switch a reminder off.
   const optionalDays = (field: string) => {
@@ -652,6 +755,8 @@ export async function updateDocument(
     return { error: "Expiry date is required." };
   const contactProblem = checkContacts(marketingEmail, managementEmails);
   if (contactProblem) return { error: contactProblem };
+  if (picEmail !== null && !EMAIL_RE.test(picEmail))
+    return { error: "Enter the PIC's account email." };
 
   // RLS scopes this to the caller's own certificate (or any, for an admin), so
   // the id off the form can only ever name a row they are allowed to change.
@@ -659,7 +764,7 @@ export async function updateDocument(
   const { data: existing, error: fetchError } = await supabase
     .from("documents")
     .select(
-      "id, cert_type, folder_id, expiry_date, marketing_email, management_email, status, reminded_at, second_reminded_at, notified_at, escalated_at, reminder_days_before, second_reminder_days_before, escalation_days",
+      "id, user_id, cert_type, folder_id, expiry_date, marketing_email, management_email, status, reminded_at, second_reminded_at, notified_at, escalated_at, reminder_days_before, second_reminder_days_before, escalation_days",
     )
     .eq("id", id)
     .single();
@@ -683,6 +788,24 @@ export async function updateDocument(
   if (reminderProblem) return { error: reminderProblem };
   if (!Number.isFinite(escalationDays) || escalationDays < 0)
     return { error: "Escalation days must be a positive number." };
+
+  // ---- PIC: looked up before anything is written, so a mistyped email
+  // rejects the whole edit instead of saving half of it ----
+  let newOwner: User | null = null;
+  let service: ServiceClient | null = null;
+  if (picEmail !== null) {
+    service = createAdminClient();
+    const lookup = await findAccount(service, picEmail);
+    if (!lookup.ok) return { error: `Could not look up ${picEmail}: ${lookup.error}` };
+    if (!lookup.account)
+      return { error: `No account uses ${picEmail}. Create it in Admin first, then choose it here.` };
+    if (lookup.account.id !== existing.user_id) {
+      if (!admin) return { error: "Only an admin can change a certificate's PIC." };
+      if (roleOf(lookup.account) === "department")
+        return { error: `${picEmail} is a view-only account, so it can't be a certificate's PIC.` };
+      newOwner = lookup.account;
+    }
+  }
 
   const resolved = await resolveVendorFolder(
     supabase,
@@ -817,6 +940,21 @@ export async function updateDocument(
         .eq("id", id);
       return { error: `Could not save the change: ${versionError.message}` };
     }
+  }
+
+  // ---- PIC, last: everything above is saved either way, and the transfer
+  // puts itself back if it fails part-way ----
+  if (newOwner && service) {
+    const transfer = await transferCertificate(service, id, newOwner);
+    if (!transfer.ok) {
+      revalidatePath("/dashboard");
+      return {
+        error:
+          `The PIC couldn't be changed: ${transfer.error}.` +
+          (changes.length ? ` Everything else was saved: ${changes.join("; ")}.` : ""),
+      };
+    }
+    changes.push(`PIC now ${displayName(newOwner)} (${newOwner.email})`);
   }
 
   revalidatePath("/dashboard");
