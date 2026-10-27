@@ -402,18 +402,26 @@ export async function createDocument(
  * `old_versions` branch marked RETAIN below and the fieldset in
  * `new-version-form.tsx`; nothing in the schema was removed, and versions
  * uploaded before this change are still on file.
+ *
+ * The file always ends up in the **owner's** storage folder. The browser
+ * uploads into the uploader's own folder, which is the same thing unless an
+ * admin is renewing somebody else's certificate — and then the file is moved
+ * across, because storage only lets the owner open files in their own folder.
  */
 export async function uploadNewVersion(
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
-  const { supabase, user, write } = await getSession();
+  const { supabase, user, write, admin } = await getSession();
   if (!user) return { error: "You must be signed in." };
   if (!write) return { error: "Your account is view-only, so it can't change certificates." };
 
   const filePath = String(formData.get("file_path") ?? "");
+  // Where the file is now: it moves to the owner's folder below if need be, and
+  // a failure has to clean up wherever it ended up.
+  let storedPath = filePath;
   const fail = async (error: string): Promise<ActionState> => {
-    await discard(supabase, filePath);
+    await discard(supabase, storedPath);
     return { error };
   };
 
@@ -452,7 +460,7 @@ export async function uploadNewVersion(
   const { data: existing, error: fetchError } = await supabase
     .from("documents")
     .select(
-      "id, cert_type, reminder_days_before, second_reminder_days_before, escalation_days, versions:document_versions(*)",
+      "id, user_id, cert_type, reminder_days_before, second_reminder_days_before, escalation_days, versions:document_versions(*)",
     )
     .eq("id", id)
     .single();
@@ -472,6 +480,19 @@ export async function uploadNewVersion(
     nextSecondReminderDays,
   );
   if (reminderProblem) return fail(reminderProblem);
+
+  // Renewing somebody else's certificate — only an admin can reach one — files
+  // the upload under its owner, not the uploader. Service role: moving into
+  // another person's folder is beyond any session.
+  if (existing.user_id !== user.id) {
+    if (!admin) return fail("Only an admin can renew somebody else's certificate.");
+    const ownerPath = `${existing.user_id}/${filePath.split("/").pop()}`;
+    const { error: moveError } = await createAdminClient()
+      .storage.from(DOCUMENTS_BUCKET)
+      .move(filePath, ownerPath);
+    if (moveError) return fail(`Could not file the upload under its owner: ${moveError.message}`);
+    storedPath = ownerPath;
+  }
 
   const priorVersions = (existing.versions ?? []) as DocumentVersion[];
   const nextVersion =
@@ -502,7 +523,7 @@ export async function uploadNewVersion(
   const { error: versionError } = await supabase.from("document_versions").insert({
     document_id: id,
     version: nextVersion,
-    file_path: filePath,
+    file_path: storedPath,
     file_type: upload.type,
     file_size: upload.size,
     expiry_date: expiryDate.toISOString(),
@@ -520,7 +541,7 @@ export async function uploadNewVersion(
   const { error: updateError } = await supabase
     .from("documents")
     .update({
-      file_path: filePath,
+      file_path: storedPath,
       file_type: upload.type,
       file_size: upload.size,
       expiry_date: expiryDate.toISOString(),

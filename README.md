@@ -443,6 +443,11 @@ The new version becomes the tracked one: its expiry is mirrored onto the
 certificate and reminder state resets to `active`. **The version it replaces is
 deleted**, row and stored file both, once the new one is safely in place.
 
+The file is always stored in the **owner's** folder. The browser uploads into
+the uploader's own folder, which is the same thing unless an admin is renewing
+somebody else's certificate; the file is then moved across, because storage
+only lets the owner open files in their own folder.
+
 Keeping the old file used to be a per-upload choice ("retain" or "delete"). It
 is now the single behaviour: a renewed certificate supersedes its predecessor
 outright, and the retained copies only accumulated storage. The code for the
